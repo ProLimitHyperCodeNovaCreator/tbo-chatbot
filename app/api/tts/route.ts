@@ -5,7 +5,7 @@ export async function POST(req: Request) {
   try {
     const { text } = await req.json();
     
-    // 'Rachel' voice ID from ElevenLabs. You can find more IDs in their documentation.
+    // 'Rachel' voice ID
     const voiceId = "21m00Tcm4TlvDq8ikWAM"; 
 
     const response = await fetch(
@@ -14,11 +14,11 @@ export async function POST(req: Request) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "xi-api-key": process.env.ELEVENLABS_API_KEY!,
+          "xi-api-key": process.env.ELEVENLABS_API_KEY || "", // Fallback to empty string to prevent crashes
         },
         body: JSON.stringify({
           text,
-          model_id: "eleven_turbo_v2", // Turbo model is fastest for real-time chat
+          model_id: "eleven_turbo_v2", 
           voice_settings: {
             stability: 0.5,
             similarity_boost: 0.75,
@@ -28,10 +28,11 @@ export async function POST(req: Request) {
     );
 
     if (!response.ok) {
-      throw new Error("Failed to generate audio from ElevenLabs");
+      const errorData = await response.json(); // Read the actual error from ElevenLabs
+      console.error("🚨 ElevenLabs Detailed Error:", errorData);
+      throw new Error(`ElevenLabs API rejected the request: ${response.status}`);
     }
 
-    // Return the audio stream directly to the client
     const audioBuffer = await response.arrayBuffer();
     return new NextResponse(audioBuffer, {
       headers: { "Content-Type": "audio/mpeg" },
