@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model user_profile {
+  user_id             String   @id @default(uuid())
+  agency_id           String
+  budget_pref         String
+  refund_pref         String
+  preferred_suppliers String[]
+  frequent_routes     Json
+  language_pref       String
+  last_active_at      DateTime
+}
+
+model booking_stats {
+  agency_id         String   @id
+  avg_booking_value Float
+  cancellation_rate Float
+  conversion_rate   Float
+  top_destinations  String[]
+  updated_at        DateTime
+}
+
+model preference_rules {
+  rule_id      String  @id @default(uuid())
+  scope        String
+  condition    String
+  boost_type   String
+  boost_weight Float
+  reason       String
+  active       Boolean
+}
+
+model ml_features {
+  option_id             String @id
+  price_bucket          String
+  distance_bucket       String
+  rating_bucket         String
+  supplier_id           String
+  historical_acceptance Float
+}
+
+model personalization_scores {
+  user_id     String
+  option_id   String
+  final_score Float
+  reasons     String[]
+  updated_at  DateTime
+
+  @@id([user_id, option_id])
+}
+
+model training_events {
+  event_id        String   @id @default(uuid())
+  user_id         String
+  option_id       String
+  price_bucket    String
+  distance_bucket String
+  rating_bucket   String
+  supplier_id     String
+  refundable      Boolean
+  accepted        Boolean
+  created_at      DateTime
+}

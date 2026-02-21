@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: personalization_user
+      POSTGRES_PASSWORD: personalization_pass
+      POSTGRES_DB: personalization_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U personalization_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://personalization_user:personalization_pass@postgres:5432/personalization_db
+      LOG_LEVEL: INFO
+      DEBUG: "False"
+      ENABLE_ML_SCORING: "True"
+      ENABLE_CACHING: "True"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./model.joblib:/app/model.joblib
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
