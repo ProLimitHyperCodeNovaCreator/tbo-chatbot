@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
 import ChatArea from '@/components/ChatArea';
@@ -23,26 +23,144 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>(mockChatMessages);
   const [selectedHotel, setSelectedHotel] = useState<string | undefined>();
   const [selectedTransport, setSelectedTransport] = useState<string | undefined>();
+  const [isLoading, setIsLoading] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
 
-  const handleSendMessage = (message: string) => {
-    const newMessage: ChatMessage = {
+  const recognitionRef = useRef<any>(null);
+
+  // Initialize Speech Recognition on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const SpeechRecognition =
+        (window as any).SpeechRecognition ||
+        (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        recognitionRef.current = new SpeechRecognition();
+        recognitionRef.current.continuous = false;
+        recognitionRef.current.interimResults = false;
+        recognitionRef.current.lang = 'en-US';
+      }
+    }
+  }, []);
+
+  // ElevenLabs Text-to-Speech function
+  const speakResponse = async (text: string) => {
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!response.ok) throw new Error('Audio fetch failed');
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+
+      audio.play();
+    } catch (error) {
+      console.error('Error playing audio:', error);
+    }
+  };
+
+  // Main logic to handle messaging (both text and voice)
+  const processMessage = async (
+    text: string,
+    isVoiceInput: boolean = false,
+  ) => {
+    if (!text.trim() || isLoading) return;
+
+    const userMessage: ChatMessage = {
       id: Date.now().toString(),
       sender: 'user',
-      message,
+      message: text.trim(),
     };
-    setMessages([...messages, newMessage]);
 
-    // Simulate agent response after a delay
-    setTimeout(() => {
-      const agentMessage: ChatMessage = {
+    setMessages((prev) => [...prev, userMessage]);
+    setIsLoading(true);
+
+    try {
+      // 1. Send text to Gemini API (or your AI endpoint)
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+
+      const replyText = data.text;
+
+      // 2. Add AI's text response to the UI
+      const assistantMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         sender: 'agent',
         avatar: mockAgent.image,
         name: mockAgent.name,
-        message: 'I will help you with that. Let me find the best options for you.',
+        message: replyText,
       };
-      setMessages((prev) => [...prev, agentMessage]);
-    }, 500);
+
+      setMessages((prev) => [...prev, assistantMessage]);
+
+      // 3. ONLY play the ElevenLabs audio if the user used the microphone
+      if (isVoiceInput) {
+        speakResponse(replyText);
+      }
+    } catch (error) {
+      console.error('Failed to fetch response:', error);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now().toString(),
+          sender: 'agent',
+          avatar: mockAgent.image,
+          name: mockAgent.name,
+          message: 'Sorry, I encountered an error connecting to the AI.',
+        },
+      ]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Triggered when user sends a text message
+  const handleSendMessage = (message: string) => {
+    processMessage(message, false); // false = don't speak back
+  };
+
+  // Triggered when user clicks the Microphone
+  const handleToggleVoice = () => {
+    if (!recognitionRef.current) {
+      alert('Voice input isn\'t supported in this browser. Try Chrome or Edge.');
+      return;
+    }
+
+    if (isRecording) {
+      recognitionRef.current.stop();
+      setIsRecording(false);
+    } else {
+      recognitionRef.current.onresult = (e: any) => {
+        const transcript = e.results[0][0].transcript;
+        if (transcript) {
+          processMessage(transcript, true); // true = speak back via ElevenLabs!
+        }
+      };
+
+      recognitionRef.current.onerror = (e: any) => {
+        if (e.error !== 'aborted')
+          console.error('Speech recognition error:', e.error);
+        setIsRecording(false);
+      };
+
+      recognitionRef.current.onend = () => {
+        setIsRecording(false);
+      };
+
+      recognitionRef.current.start();
+      setIsRecording(true);
+    }
   };
 
   const handleGeneratePDF = () => {
@@ -87,12 +205,15 @@ export default function Home() {
               <ChatArea
                 messages={messages}
                 onSendMessage={handleSendMessage}
+                onToggleVoice={handleToggleVoice}
                 hotels={mockHotels}
                 selectedHotelId={selectedHotel}
                 onSelectHotel={setSelectedHotel}
                 transportOptions={mockTransport}
                 selectedTransportId={selectedTransport}
                 onSelectTransport={setSelectedTransport}
+                isLoading={isLoading}
+                isRecording={isRecording}
               />
             </div>
           </div>

@@ -9,7 +9,7 @@ export async function POST(req: Request) {
     const { message } = await req.json();
 
     // We use gemini-1.5-flash as it is extremely fast and perfect for voice conversations
-    const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
     
     // Prompting it to give short, conversational answers suited for voice
     const prompt = `You are a helpful, friendly voice assistant. Keep your answers concise, conversational, and natural to read aloud. The user says: "${message}"`;

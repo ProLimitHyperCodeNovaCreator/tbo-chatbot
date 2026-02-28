@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Send, Paperclip } from 'lucide-react';
+import { Send, Paperclip, Mic, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ChatMessage, HotelOption, TransportOption } from '@/lib/types';
 import HotelOptions from './HotelOptions';
@@ -10,6 +10,7 @@ import TransportOptions from './TransportOptions';
 interface ChatAreaProps {
   messages: ChatMessage[];
   onSendMessage?: (message: string) => void;
+  onToggleVoice?: () => void;
   placeholder?: string;
   hotels?: HotelOption[];
   selectedHotelId?: string;
@@ -17,11 +18,14 @@ interface ChatAreaProps {
   transportOptions?: TransportOption[];
   selectedTransportId?: string;
   onSelectTransport?: (transportId: string) => void;
+  isLoading?: boolean;
+  isRecording?: boolean;
 }
 
 export default function ChatArea({
   messages,
   onSendMessage,
+  onToggleVoice,
   placeholder = "What would you like to explore next?",
   hotels,
   selectedHotelId,
@@ -29,6 +33,8 @@ export default function ChatArea({
   transportOptions,
   selectedTransportId,
   onSelectTransport,
+  isLoading = false,
+  isRecording = false,
 }: ChatAreaProps) {
   const [input, setInput] = React.useState('');
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
@@ -116,16 +122,30 @@ export default function ChatArea({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-              placeholder={placeholder}
-              className="flex-1 bg-transparent outline-none text-sm text-gray-900 placeholder-gray-600"
+              placeholder={isRecording ? 'Listening...' : placeholder}
+              disabled={isLoading || isRecording}
+              className="flex-1 bg-transparent outline-none text-sm text-gray-900 placeholder-gray-600 disabled:opacity-50"
             />
+            <button
+              onClick={onToggleVoice}
+              disabled={isLoading}
+              className={`p-2 rounded-full transition-colors ${
+                isRecording
+                  ? 'bg-red-500 text-white hover:bg-red-600'
+                  : 'hover:bg-gray-200 text-gray-600'
+              }`}
+              aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+            >
+              {isRecording ? <Square size={18} fill="currentColor" /> : <Mic size={18} />}
+            </button>
             <button className="p-2 hover:bg-gray-200 rounded-full transition-colors">
               <Paperclip size={18} className="text-gray-600" />
             </button>
           </div>
           <Button
             onClick={handleSend}
-            className="bg-orange-500 hover:bg-orange-600 text-white rounded-full p-3 h-full flex items-center justify-center transition-colors"
+            disabled={!input.trim() || isLoading || isRecording}
+            className="bg-orange-500 hover:bg-orange-600 text-white rounded-full p-3 h-full flex items-center justify-center transition-colors disabled:opacity-50"
           >
             <Send size={18} />
           </Button>
