@@ -25,6 +25,7 @@ export default function Home() {
   const [selectedTransport, setSelectedTransport] = useState<string | undefined>();
   const [isLoading, setIsLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [showQuotePanel, setShowQuotePanel] = useState(false);
 
   const recognitionRef = useRef<any>(null);
 
@@ -78,7 +79,53 @@ export default function Home() {
     };
 
     setMessages((prev) => [...prev, userMessage]);
+    
+    // Show QuotePanel on first user interaction
+    if (!showQuotePanel) {
+      setShowQuotePanel(true);
+    }
+
+    // Add thinking message while processing with agent activities
+    const thinkingMessageId = (Date.now() + 1).toString();
+    const thinkingMessage: ChatMessage = {
+      id: thinkingMessageId,
+      sender: 'agent',
+      avatar: mockAgent.image,
+      name: mockAgent.name,
+      message: 'Processing your request...',
+      isLoading: true,
+      agentActivity: ['🔍 Analyzing request', '🌐 Searching for options', '💭 Generating recommendations'],
+      currentActivity: '🔍 Analyzing request',
+    };
+
+    setMessages((prev) => [...prev, thinkingMessage]);
     setIsLoading(true);
+
+    // Simulate agent activity progression
+    const activitySequence = [
+      '🔍 Analyzing request',
+      '🌐 Searching for hotels & flights',
+      '💰 Comparing prices',
+      '📊 Analyzing patterns',
+      '🎯 Generating recommendations',
+    ];
+
+    let currentActivityIndex = 0;
+    const activityInterval = setInterval(() => {
+      if (currentActivityIndex < activitySequence.length - 1) {
+        currentActivityIndex++;
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === thinkingMessageId
+              ? {
+                  ...msg,
+                  currentActivity: activitySequence[currentActivityIndex],
+                }
+              : msg
+          )
+        );
+      }
+    }, 800); // Update activity every 800ms
 
     try {
       // 1. Send text to Gemini API (or your AI endpoint)
@@ -93,16 +140,22 @@ export default function Home() {
 
       const replyText = data.text;
 
-      // 2. Add AI's text response to the UI
-      const assistantMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        sender: 'agent',
-        avatar: mockAgent.image,
-        name: mockAgent.name,
-        message: replyText,
-      };
+      clearInterval(activityInterval);
 
-      setMessages((prev) => [...prev, assistantMessage]);
+      // 2. Replace thinking message with actual response
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === thinkingMessageId
+            ? {
+                ...msg,
+                message: replyText,
+                isLoading: false,
+                currentActivity: '✅ Complete',
+                agentActivity: [],
+              }
+            : msg
+        )
+      );
 
       // 3. ONLY play the ElevenLabs audio if the user used the microphone
       if (isVoiceInput) {
@@ -110,16 +163,20 @@ export default function Home() {
       }
     } catch (error) {
       console.error('Failed to fetch response:', error);
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          sender: 'agent',
-          avatar: mockAgent.image,
-          name: mockAgent.name,
-          message: 'Sorry, I encountered an error connecting to the AI.',
-        },
-      ]);
+      clearInterval(activityInterval);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === thinkingMessageId
+            ? {
+                ...msg,
+                message: 'Sorry, I encountered an error connecting to the AI.',
+                isLoading: false,
+                currentActivity: '❌ Error',
+                agentActivity: [],
+              }
+            : msg
+        )
+      );
     } finally {
       setIsLoading(false);
     }
@@ -218,14 +275,16 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Right: Quote Panel */}
-          <div className="w-full lg:w-72 flex-shrink-0 overflow-y-auto">
-            <QuotePanel
-              quote={mockQuote}
-              recommendedHotels={mockRecommendedHotels}
-              onGeneratePDF={handleGeneratePDF}
-            />
-          </div>
+          {/* Right: Quote Panel - Show only after user interaction */}
+          {showQuotePanel && (
+            <div className="w-full lg:w-72 flex-shrink-0 overflow-y-auto animate-slideInRight">
+              <QuotePanel
+                quote={mockQuote}
+                recommendedHotels={mockRecommendedHotels}
+                onGeneratePDF={handleGeneratePDF}
+              />
+            </div>
+          )}
         </div>
       </div>
     </div>
