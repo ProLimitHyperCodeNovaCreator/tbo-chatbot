@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { ChatMessage, HotelOption, TransportOption, QuoteSummary, RecommendedHotel } from '@/lib/types';
 import HotelOptions from './HotelOptions';
 import TransportOptions from './TransportOptions';
+import TravelPlanForm, { TravelPlanDetails } from './TravelPlanForm';
 
 interface ChatAreaProps {
   messages: ChatMessage[];
@@ -24,6 +25,9 @@ interface ChatAreaProps {
   quote?: QuoteSummary;
   recommendedHotels?: RecommendedHotel[];
   onGeneratePDF?: () => void;
+  showTravelPlanForm?: boolean;
+  travelPlanFormDestination?: string;
+  onTravelPlanSubmit?: (details: TravelPlanDetails) => void;
 }
 
 export default function ChatArea({
@@ -43,6 +47,9 @@ export default function ChatArea({
   quote,
   recommendedHotels = [],
   onGeneratePDF,
+  showTravelPlanForm = false,
+  travelPlanFormDestination = '',
+  onTravelPlanSubmit,
 }: ChatAreaProps) {
   const [input, setInput] = React.useState('');
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
@@ -271,6 +278,15 @@ export default function ChatArea({
           )}
           </React.Fragment>
         ))}
+
+        {/* In-chat form to collect travel details when user asked for a plan */}
+        {showTravelPlanForm && onTravelPlanSubmit && (
+          <TravelPlanForm
+            initialDestination={travelPlanFormDestination}
+            onSubmit={onTravelPlanSubmit}
+            disabled={isLoading}
+          />
+        )}
 
         <div ref={messagesEndRef} />
           </>
