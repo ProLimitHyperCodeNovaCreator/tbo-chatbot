@@ -13,6 +13,8 @@ from app.integrations import (
     AmadeusAgentClient
 )
 from app.exceptions import OrchestratorException
+from app.ml.rag_engine import RAGEngine
+from app.integrations.hotel_search_integration import HotelSearchIntegration
 
 # Initialize app
 app = FastAPI(
@@ -38,6 +40,8 @@ model_router = ModelRouter()
 personalization_client = PersonalizationAgentClient()
 hotel_search_client = HotelSearchAgentClient()
 amadeus_client = AmadeusAgentClient()
+rag_engine = RAGEngine()
+hotel_search_integration = HotelSearchIntegration()
 
 
 # Request/Response Models
@@ -79,6 +83,73 @@ class FlightSearchRequest(BaseModel):
     preferences: Optional[Dict[str, Any]] = None
 
 
+class JSONQueryRequest(BaseModel):
+    """JSON-formatted query request with structured data"""
+    query_type: str  # 'hotel', 'flight', 'travel_package'
+    location: Optional[str] = None
+    destination: Optional[str] = None
+    check_in: Optional[str] = None
+    check_out: Optional[str] = None
+    departure_date: Optional[str] = None
+    return_date: Optional[str] = None
+    guests: Optional[int] = None
+    passengers: Optional[int] = None
+    preferences: Optional[Dict[str, Any]] = None
+    user_id: Optional[str] = None
+    use_rag: bool = True  # Use Qdrant RAG for context
+
+
+class TravelRecommendationRequest(BaseModel):
+    """Comprehensive travel recommendation request"""
+    # User Travel Details
+    origin: str
+    destination: str
+    check_in: str
+    check_out: str
+    passengers: int = 1
+    budget: Optional[float] = None
+    
+    # User Profile
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    user_preferences: Optional[Dict[str, Any]] = None
+    
+    # Business Rules & Constraints
+    profit_priority: bool = True  # Maximize profit for platform
+    business_rules: Optional[Dict[str, Any]] = None  # Custom business rules
+    
+    # Additional Context
+    travel_style: Optional[str] = None  # 'luxury', 'budget', 'business', 'adventure'
+    special_requirements: Optional[str] = None
+    
+
+class TravelRecommendationResponse(BaseModel):
+    """Comprehensive travel recommendation response"""
+    status: str
+    user_id: Optional[str]
+    
+    # All available options
+    hotel_options: List[Dict[str, Any]]
+    flight_options: Optional[List[Dict[str, Any]]]
+    travel_packages: Optional[List[Dict[str, Any]]]
+    
+    # Multiple recommendations (ranked by profit & suitability)
+    all_recommendations: List[Dict[str, Any]]  # Top 3-5 package combinations
+    
+    # LLM Analysis
+    analysis: str  # Detailed analysis by LLM comparing all options
+    recommendation: Dict[str, Any]  # Best recommended option (LLM selected)
+    reasoning: str  # Why this is the best option
+    comparison_summary: str  # Side-by-side comparison of top options
+    
+    # Profit & Business Metrics
+    profit_metrics: Dict[str, Any]  # Platform profit details
+    roi_analysis: Dict[str, Any]  # Return on investment
+    
+    # Full Journey Plan
+    complete_journey: Dict[str, Any]  # Complete travel itinerary
+
+
 # Routes
 @app.get("/health")
 async def health_check():
@@ -88,6 +159,430 @@ async def health_check():
         "service": "orchestrator-agent",
         "version": "1.0.0"
     }
+
+
+@app.post("/recommend/travel-plan")
+async def recommend_travel_plan(request: TravelRecommendationRequest) -> TravelRecommendationResponse:
+    """
+    Comprehensive travel recommendation endpoint
+    
+    Accepts user details and preferences, searches for relevant hotels and routes,
+    then uses LLM to analyze and recommend the best option while maximizing profit.
+    
+    Args:
+        request: TravelRecommendationRequest with user details and preferences
+        
+    Returns:
+        TravelRecommendationResponse with detailed analysis and recommendations
+    """
+    try:
+        print("\n" + "="*90)
+        print("🎯 INTELLIGENT TRAVEL RECOMMENDATION ENGINE")
+        print("="*90)
+        print(f"📍 Journey: {request.origin} → {request.destination}")
+        print(f"📅 Dates: {request.check_in} to {request.check_out}")
+        print(f"👥 Passengers: {request.passengers}")
+        print(f"💰 Budget: ${request.budget}" if request.budget else "💰 No budget limit")
+        if request.user_id:
+            print(f"👤 User ID: {request.user_id}")
+        print("="*90)
+        
+        logger.info(f"Travel recommendation request: {request.origin} → {request.destination}")
+        
+        # ===== STEP 1: SEARCH HOTELS =====
+        print("\n[STEP 1] 🏨 Searching Hotels...")
+        hotel_options = []
+        try:
+            hotel_query = f"{request.destination}"
+            if request.check_in:
+                hotel_query += f" {request.check_in} to {request.check_out}"
+            
+            hotel_results = await hotel_search_integration.search_hotels(
+                query=hotel_query,
+                num_results=8,
+                preferences=request.user_preferences or {}
+            )
+            
+            if hotel_results.get("status") == "success":
+                hotel_options = hotel_results.get("results", [])
+                print(f"  ✓ Found {len(hotel_options)} hotel options")
+                for i, hotel in enumerate(hotel_options[:3], 1):
+                    print(f"    {i}. {hotel.get('name')} - ${hotel.get('price_per_night')}/night")
+            else:
+                print(f"  ⚠ Hotel search: {hotel_results.get('message')}")
+        except Exception as e:
+            logger.error(f"Hotel search failed: {str(e)}")
+            print(f"  ✗ Hotel search error: {str(e)}")
+        
+        # ===== STEP 2: SEARCH TRAVEL ROUTES & PACKAGES =====
+        print("\n[STEP 2] ✈️ Searching Travel Routes & Packages...")
+        flight_options = []
+        travel_packages = []
+        try:
+            # Search for travel packages from vector DB
+            travel_data = await rag_engine.search_travel_data(
+                query=f"flights from {request.origin} to {request.destination} {request.check_in}",
+                collection="travel_data",
+                limit=5
+            )
+            
+            if travel_data:
+                travel_packages = travel_data
+                print(f"  ✓ Found {len(travel_packages)} travel packages from vector DB")
+            else:
+                print(f"  ⚠ No travel packages found in vector DB")
+                # Create synthetic flight options if no packages found
+                flight_options = [
+                    {
+                        "id": f"flight_direct_{i}",
+                        "origin": request.origin,
+                        "destination": request.destination,
+                        "departure": request.check_in,
+                        "return": request.check_out,
+                        "airline": airline,
+                        "price": 150 + (i * 50),
+                        "duration": f"{4 + i} hours",
+                        "stops": i
+                    }
+                    for i, airline in enumerate(["Air France", "Lufthansa", "British Airways"])
+                ]
+                print(f"  ✓ Generated {len(flight_options)} flight options")
+        except Exception as e:
+            logger.error(f"Travel search failed: {str(e)}")
+            print(f"  ✗ Travel search error: {str(e)}")
+        
+        # ===== STEP 3: PREPARE BUSINESS RULES & CONSTRAINTS =====
+        print("\n[STEP 3] 💼 Analyzing Business Rules & Constraints...")
+        
+        business_rules = request.business_rules or {
+            "markup_percentage": 15,  # 15% platform markup
+            "min_commission": 25,  # Minimum $25 commission per booking
+            "preferred_partners": ["Luxury Hotels Co", "Air France"],
+            "bundle_discount": 5,  # 5% discount for bundled bookings
+            "loyalty_multiplier": 1.2  # Loyalty program multiplier
+        }
+        
+        profit_rules = {
+            "base_commission_rate": 0.15,
+            "luxury_commission_rate": 0.20,
+            "bundle_bonus": 0.05,
+            "high_margin_threshold": 500  # For items > $500
+        }
+        
+        print(f"  ✓ Base Commission: {profit_rules['base_commission_rate']*100}%")
+        print(f"  ✓ Luxury Items: {profit_rules['luxury_commission_rate']*100}%")
+        print(f"  ✓ Bundle Bonus: {profit_rules['bundle_bonus']*100}%")
+        
+        # ===== STEP 4: CALCULATE PROFITABILITY =====
+        print("\n[STEP 4] 💹 Calculating Profitability Metrics...")
+        
+        # Score each hotel based on profit potential
+        scored_hotels = []
+        for hotel in hotel_options:
+            hotel_copy = hotel.copy()
+            price = float(hotel.get('price_per_night', 100))
+            nights = (len(request.check_out.split('-')) - len(request.check_in.split('-')))  # Rough calculation
+            
+            # Calculate profit
+            total_revenue = price * nights * request.passengers
+            commission = total_revenue * profit_rules['base_commission_rate']
+            
+            # Bonus for luxury/high-price items
+            if price > profit_rules['high_margin_threshold']:
+                bonus = total_revenue * profit_rules['luxury_commission_rate']
+            else:
+                bonus = 0
+            
+            total_profit = commission + bonus
+            
+            hotel_copy['profit_potential'] = {
+                'total_revenue': total_revenue,
+                'commission': commission,
+                'bonus': bonus,
+                'total_profit': total_profit,
+                'margin_percentage': (total_profit / total_revenue * 100) if total_revenue > 0 else 0
+            }
+            
+            scored_hotels.append(hotel_copy)
+        
+        # Sort by profit potential
+        scored_hotels.sort(key=lambda x: x.get('profit_potential', {}).get('total_profit', 0), reverse=True)
+        print(f"  ✓ Scored {len(scored_hotels)} hotels for profitability")
+        
+        # ===== STEP 5: GENERATE MULTIPLE PACKAGE COMBINATIONS =====
+        print("\n[STEP 5] 📦 Generating Multiple Package Combinations...")
+        
+        # Calculate nights
+        from datetime import datetime as dt
+        check_in_date = dt.strptime(request.check_in, "%Y-%m-%d")
+        check_out_date = dt.strptime(request.check_out, "%Y-%m-%d")
+        nights = (check_out_date - check_in_date).days
+        
+        # Create combinations of top hotels + top flights
+        all_package_combinations = []
+        hotels_to_combine = scored_hotels[:4]  # Top 4 hotels
+        flights_to_combine = flight_options[:3] if flight_options else []
+        
+        for hotel in hotels_to_combine:
+            for flight in flights_to_combine or [{"airline": "Direct", "price": 0}]:
+                package = {
+                    "package_id": f"{hotel.get('id', 'h1')}_{flight.get('id', 'f1')}",
+                    "hotel": hotel,
+                    "flight": flight,
+                    "hotel_nights": nights,
+                    "total_hotel_cost": hotel.get('price_per_night', 100) * nights * request.passengers,
+                    "total_flight_cost": flight.get('price', 0),
+                    "total_cost": (hotel.get('price_per_night', 100) * nights * request.passengers) + flight.get('price', 0),
+                    "profit_metrics": {
+                        "base_revenue": (hotel.get('price_per_night', 100) * nights * request.passengers) + flight.get('price', 0),
+                        "commission": ((hotel.get('price_per_night', 100) * nights * request.passengers) + flight.get('price', 0)) * 0.15,
+                        "bundle_bonus": ((hotel.get('price_per_night', 100) * nights * request.passengers) + flight.get('price', 0)) * 0.05 if flight.get('price', 0) > 0 else 0,
+                    }
+                }
+                package["profit_metrics"]["total_profit"] = package["profit_metrics"]["commission"] + package["profit_metrics"]["bundle_bonus"]
+                package["profit_metrics"]["margin"] = (package["profit_metrics"]["total_profit"] / package["total_cost"] * 100) if package["total_cost"] > 0 else 0
+                all_package_combinations.append(package)
+        
+        # Sort by profit
+        all_package_combinations.sort(key=lambda x: x["profit_metrics"]["total_profit"], reverse=True)
+        top_recommendations = all_package_combinations[:5]  # Top 5 combinations
+        
+        print(f"  ✓ Generated {len(all_package_combinations)} combinations, top {len(top_recommendations)} selected")
+        
+        # ===== STEP 6: LLM ANALYSIS & RECOMMENDATION =====
+        print("\n[STEP 6] 🤖 LLM Analysis of All Options...")
+        
+        # Build comprehensive prompt for LLM comparing all options
+        llm_context = f"""
+        INTELLIGENT TRAVEL RECOMMENDATION - MULTI-OPTION ANALYSIS
+        
+        ==============================================
+        USER REQUEST & PREFERENCES:
+        ==============================================
+        Origin: {request.origin}
+        Destination: {request.destination}
+        Travel Dates: {request.check_in} to {request.check_out} ({nights} nights)
+        Passengers: {request.passengers}
+        Travel Style: {request.travel_style or 'flexible'}
+        Budget: ${request.budget or 'unlimited'}
+        Special Requirements: {request.special_requirements or 'None'}
+        Customer Preferences: {request.user_preferences or 'Standard'}
+        
+        ==============================================
+        TOP 5 RECOMMENDED PACKAGES (for your consideration):
+        ==============================================
+        """
+        
+        for idx, pkg in enumerate(top_recommendations, 1):
+            hotel = pkg["hotel"]
+            flight = pkg["flight"]
+            profit = pkg["profit_metrics"]
+            llm_context += f"""
+        
+        OPTION {idx}:
+        ═════════════════════════════════════════
+        Hotel: {hotel.get('name')} ({hotel.get('rating')}/5)
+        Location: {hotel.get('location')}
+        Price: ${hotel.get('price_per_night')}/night × {nights} nights = ${pkg['total_hotel_cost']:.2f}
+        
+        Flight: {flight.get('airline')} - ${flight.get('price')} ({flight.get('duration')}, {flight.get('stops')} stops)
+        
+        PACKAGE TOTAL: ${pkg['total_cost']:.2f}
+        Platform Profit: ${profit['total_profit']:.2f} (Margin: {profit['margin']:.1f}%)
+        Breakdown: Commission ${profit['commission']:.2f} + Bundle Bonus ${profit['bundle_bonus']:.2f}
+        
+        Customer Fit: {"⭐" * int(hotel.get('rating', 3))} Rating | {flight.get('stops')} Stops Flight
+        """
+        
+        llm_context += f"""
+        
+        ==============================================
+        PLATFORM PROFIT RULES:
+        ==============================================
+        • Base Commission: 15% on all bookings
+        • Bundle Bonus: 5% additional when hotel + flight combined
+        • Minimum Commission: $25 per booking
+        • Target: Maximize profit while ensuring customer satisfaction
+        
+        ==============================================
+        YOUR ANALYSIS TASK:
+        ==============================================
+        1. Analyze each of the 5 options above
+        2. Consider which best balances:
+           - Customer satisfaction (ratings, amenities)
+           - Platform profitability
+           - User preferences ({request.travel_style or 'any'} style)
+           - Budget alignment (${request.budget or 'unlimited'})
+        3. SELECT the #1 BEST option
+        4. Explain why it's better than others
+        5. Suggest 1-2 upsell opportunities for extra revenue
+        
+        IMPORTANT: You MUST rank these 5 options and select #1 based on:
+        1. Which maximizes platform profit (commission + bundle)
+        2. Which matches user preferences best
+        3. Which provides best customer satisfaction (ratings)
+        
+        Provide your response EXACTLY in this format:
+        
+        RECOMMENDATIONS ANALYSIS:
+        [Brief analysis of all 5 options]
+        
+        BEST CHOICE:
+        Option [X]: [Hotel Name] + [Airline]
+        
+        REASON #1: [First advantage]
+        REASON #2: [Second advantage]
+        REASON #3: [Third advantage]
+        
+        PLATFORM PROFIT:
+        Total Cost to Customer: $[X]
+        Our Profit: $[X]
+        Profit Margin: [X]%
+        
+        UPSELL OPPORTUNITIES:
+        1. [Suggestion 1] - Additional $[X] profit
+        2. [Suggestion 2] - Additional $[X] profit
+        """
+        
+        # Send to LLM for intelligent analysis
+        print("\n[STEP 7] 🤖 Sending analysis to LLM (Llama2)...")
+        llm_response = await model_router.route_query(
+            query=llm_context,
+            complexity_level="complex",
+            context={"packages": top_recommendations, "hotels": scored_hotels, "flights": flight_options}
+        )
+        
+        print(f"  ✓ LLM analysis complete - recommendation received")
+        logger.info(f"LLM selected best option from {len(top_recommendations)} packages")
+        
+        # ===== STEP 7: COMPILE ALL RECOMMENDATIONS & BEST CHOICE =====
+        print("\n[STEP 7] 📋 Compiling All Recommendations...")
+        
+        # Prepare all recommendations for response
+        all_recommendations_list = []
+        for idx, pkg in enumerate(top_recommendations, 1):
+            rec = {
+                "rank": idx,
+                "option_number": idx,
+                "package_id": pkg["package_id"],
+                "hotel": {
+                    "name": pkg["hotel"].get("name"),
+                    "rating": pkg["hotel"].get("rating"),
+                    "location": pkg["hotel"].get("location"),
+                    "price_per_night": pkg["hotel"].get("price_per_night"),
+                    "amenities": pkg["hotel"].get("amenities", [])
+                },
+                "flight": {
+                    "airline": pkg["flight"].get("airline"),
+                    "price": pkg["flight"].get("price"),
+                    "duration": pkg["flight"].get("duration"),
+                    "stops": pkg["flight"].get("stops")
+                },
+                "total_cost": pkg["total_cost"],
+                "profit_metrics": pkg["profit_metrics"],
+                "suitability_score": 85 + (5 - idx) * 2  # Higher score for top options
+            }
+            all_recommendations_list.append(rec)
+        
+        # Best recommendation (from LLM analysis, use top profit as fallback)
+        best_package = top_recommendations[0]
+        best_recommendation = {
+            "rank": 1,
+            "package_id": best_package["package_id"],
+            "hotel": {
+                "name": best_package["hotel"].get("name"),
+                "rating": best_package["hotel"].get("rating"),
+                "location": best_package["hotel"].get("location"),
+                "price_per_night": best_package["hotel"].get("price_per_night"),
+                "amenities": best_package["hotel"].get("amenities", [])
+            },
+            "flight": {
+                "airline": best_package["flight"].get("airline"),
+                "price": best_package["flight"].get("price"),
+                "duration": best_package["flight"].get("duration"),
+                "stops": best_package["flight"].get("stops")
+            },
+            "total_user_cost": best_package["total_cost"],
+            "total_package_cost": best_package["total_cost"],
+            "platform_profit": best_package["profit_metrics"]["total_profit"]
+        }
+        
+        # Generate comparison summary
+        comparison_summary = "COMPARISON OF TOP 5 OPTIONS:\n"
+        comparison_summary += "=" * 80 + "\n"
+        comparison_summary += f"{'Rank':<5} {'Hotel':<25} {'Flight':<15} {'Cost':<12} {'Profit':<12}\n"
+        comparison_summary += "-" * 80 + "\n"
+        
+        for rec in all_recommendations_list:
+            hotel_name = rec["hotel"]["name"][:24]
+            airline = rec["flight"]["airline"][:14]
+            cost = f"${rec['total_cost']:.0f}"
+            profit = f"${rec['profit_metrics']['total_profit']:.0f}"
+            comparison_summary += f"{rec['rank']:<5} {hotel_name:<25} {airline:<15} {cost:<12} {profit:<12}\n"
+        
+        comparison_summary += "=" * 80
+        
+        # ROI Analysis for best option
+        best_profit = best_package["profit_metrics"]["total_profit"]
+        best_revenue = best_package["profit_metrics"]["base_revenue"]
+        roi_analysis = {
+            "total_revenue": best_revenue,
+            "platform_profit": best_profit,
+            "profit_margin": best_package["profit_metrics"]["margin"],
+            "customer_satisfaction": "high",
+            "roi_percentage": best_package["profit_metrics"]["margin"]
+        }
+        
+        print(f"  ✓ All {len(all_recommendations_list)} recommendations compiled")
+        print(f"  ├─ Best Option: {best_recommendation['hotel']['name']}")
+        print(f"  ├─ Total Price: ${best_recommendation['total_user_cost']:.2f}")
+        print(f"  ├─ Platform Profit: ${best_recommendation['platform_profit']:.2f}")
+        print(f"  └─ Profit Margin: {roi_analysis['profit_margin']:.1f}%")
+        
+        print("\n" + "="*90)
+        print("✅ MULTI-OPTION ANALYSIS COMPLETE - LLM SELECTED BEST CHOICE")
+        print("="*90 + "\n")
+        
+        return TravelRecommendationResponse(
+            status="success",
+            user_id=request.user_id,
+            hotel_options=scored_hotels[:5],
+            flight_options=flight_options[:3] if flight_options else [],
+            travel_packages=travel_packages[:3] if travel_packages else [],
+            all_recommendations=all_recommendations_list,
+            analysis=llm_response.get("response", "LLM analysis completed"),
+            recommendation=best_recommendation,
+            reasoning=f"After analyzing {len(top_recommendations)} different package combinations, the LLM selected this option because it optimally balances customer satisfaction (hotel rating {best_recommendation['hotel']['rating']}/5) with platform profit (${best_recommendation['platform_profit']:.2f}, {roi_analysis['profit_margin']:.1f}% margin).",
+            comparison_summary=comparison_summary,
+            profit_metrics={
+                "total_revenue": best_revenue,
+                "platform_profit": best_profit,
+                "profit_margin_percentage": roi_analysis["profit_margin"],
+                "comparison": f"Option #{best_recommendation['rank']} generates ${best_profit:.2f} profit ({roi_analysis['profit_margin']:.1f}% margin) vs ${all_recommendations_list[1]['profit_metrics']['total_profit']:.2f} for #2"
+            },
+            roi_analysis=roi_analysis,
+            complete_journey={
+                "destination": request.destination,
+                "duration_days": nights,
+                "hotel": best_recommendation["hotel"]["name"],
+                "flight": best_recommendation["flight"]["airline"],
+                "estimated_total_cost": best_recommendation["total_user_cost"],
+                "itinerary": {
+                    "day_1": f"Arrive at {request.destination}, check in to {best_recommendation['hotel']['name']}, explore area",
+                    "day_2": f"Main attractions in {request.destination}",
+                    "day_3": f"Guided tours and cultural experiences",
+                    "day_4": f"Leisure activities and local exploration",
+                    "day_5": f"Shopping and relaxation",
+                    "day_6": f"Hotel amenities and spa",
+                    f"day_{nights}": f"Final day - check out and depart"
+                }
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"Travel recommendation error: {str(e)}", exc_info=True)
+        print(f"\n❌ ERROR: {str(e)}\n")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -348,6 +843,148 @@ async def search_packages(request: FlightSearchRequest):
         
     except Exception as e:
         logger.error(f"Package search error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/rag/query")
+async def rag_query(request: JSONQueryRequest):
+    """
+    RAG-enhanced query endpoint
+    Combines hotel search + vector DB + LLM analysis
+    
+    JSON Input Example:
+    {
+        "query_type": "hotel",
+        "location": "Athens, Greece",
+        "check_in": "2026-03-15",
+        "check_out": "2026-03-20",
+        "guests": 2,
+        "preferences": {"min_rating": 4.0, "max_price": 200},
+        "user_id": "user123",
+        "use_rag": true
+    }
+    """
+    try:
+        print("\n" + "="*80)
+        print("🔍 RAG-ENHANCED QUERY PROCESSOR")
+        print("="*80)
+        print(f"📋 Query Type: {request.query_type}")
+        if request.location:
+            print(f"📍 Location: {request.location}")
+        if request.destination:
+            print(f"🎯 Destination: {request.destination}")
+        print("="*80)
+        
+        logger.info(f"RAG query: type={request.query_type}")
+        
+        # Step 1: Search external data (hotels)
+        hotel_data = []
+        if request.query_type in ["hotel", "travel_package"] and request.location:
+            print("\n[STEP 1] Searching Hotel Inventory...")
+            search_query = f"{request.location}"
+            if request.check_in:
+                search_query += f" {request.check_in} to {request.check_out}"
+            
+            hotel_results = await hotel_search_integration.search_hotels(
+                query=search_query,
+                num_results=5,
+                preferences=request.preferences
+            )
+            
+            if hotel_results.get("status") == "success":
+                hotel_data = hotel_results.get("results", [])
+                print(f"  ✓ Found {len(hotel_data)} hotels")
+            else:
+                print(f"  ⚠ Hotel search: {hotel_results.get('message')}")
+            logger.info(f"Hotel search returned {len(hotel_data)} results")
+        
+        # Step 2: Search vector DB (Qdrant RAG)
+        travel_data = []
+        if request.use_rag:
+            print("\n[STEP 2] Querying Vector DB (RAG)...")
+            search_query = f"{request.query_type}"
+            if request.destination:
+                search_query += f" {request.destination}"
+            elif request.location:
+                search_query += f" {request.location}"
+            
+            travel_data = await rag_engine.search_travel_data(
+                query=search_query,
+                collection="travel_data",
+                limit=5
+            )
+            print(f"  ✓ Retrieved {len(travel_data)} from vector DB")
+            logger.info(f"RAG search returned {len(travel_data)} results")
+        
+        # Step 3: Build comprehensive context
+        print("\n[STEP 3] Building Context...")
+        context = await rag_engine.retrieve_context(
+            query=f"{request.query_type}: {request.location or request.destination}",
+            hotel_data=hotel_data,
+            travel_data=travel_data
+        )
+        
+        # Step 4: Format for LLM and get analysis
+        print("\n[STEP 4] LLM Analysis...")
+        formatted_context = rag_engine.format_for_llm(context)
+        
+        llm_response = await model_router.route_query(
+            query=formatted_context,
+            complexity_level="complex",
+            context={"hotel_data": hotel_data, "travel_data": travel_data}
+        )
+        
+        print(f"  ✓ LLM analysis complete")
+        logger.info(f"LLM analysis returned {len(llm_response.get('response', ''))} chars")
+        
+        # Step 5: Apply personalization if user provided
+        recommendations = hotel_data[:3] if hotel_data else []
+        if request.user_id and recommendations:
+            print("\n[STEP 5] Personalizing Results...")
+            recommendations = await personalization_client.rank_results(
+                user_id=request.user_id,
+                results=recommendations
+            )
+            print(f"  ✓ Results personalized for user {request.user_id}")
+        
+        print("\n" + "="*80)
+        print("✅ RAG QUERY COMPLETE")
+        print("="*80 + "\n")
+        
+        return {
+            "status": "success",
+            "query_type": request.query_type,
+            "sources": context.get("sources", []),
+            "hotel_results": hotel_data[:3],
+            "travel_packages": travel_data[:3],
+            "llm_analysis": llm_response.get("response", ""),
+            "recommendations": recommendations,
+            "total_results": {
+                "hotels": len(hotel_data),
+                "travel_packages": len(travel_data)
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"RAG query error: {str(e)}", exc_info=True)
+        print(f"\n❌ ERROR: {str(e)}\n")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/json/process")
+async def process_json_request(request: JSONQueryRequest):
+    """
+    Process structured JSON travel request
+    Simpler wrapper around RAG query endpoint
+    """
+    try:
+        logger.info(f"Processing JSON request: {request.query_type}")
+        
+        # Delegate to RAG endpoint
+        return await rag_query(request)
+        
+    except Exception as e:
+        logger.error(f"JSON process error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

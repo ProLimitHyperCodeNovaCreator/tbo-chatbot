@@ -1,0 +1,238 @@
+services:
+  # ================================
+  # INFRASTRUCTURE LAYER
+  # ================================
+
+  # Redis Cache & Message Queue
+  redis:
+    image: redis:7-alpine
+    container_name: tbo-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - tbo-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Qdrant Vector Database (RAG)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: tbo-qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    networks:
+      - tbo-network
+    environment:
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: tbo-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-password}
+      POSTGRES_DB: orchestrator
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - tbo-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Ollama LLM Service (Phi4 & Llama2)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: tbo-ollama
+    ports:
+      - "11434:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - tbo-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ================================
+  # MODEL INITIALIZATION
+  # ================================
+
+  model-init:
+    image: curlimages/curl:latest
+    container_name: tbo-model-init
+    depends_on:
+      ollama:
+        condition: service_started
+    networks:
+      - tbo-network
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    command: >
+      sh -c "
+      echo '[INIT] Waiting for Ollama service...' &&
+      for i in {1..120}; do
+        if curl -s http://ollama:11434/api/tags > /dev/null 2>&1; then
+          echo '[INIT] ✓ Ollama is ready' &&
+          echo '[INIT] Pulling phi4:latest...' &&
+          curl -s -X POST http://ollama:11434/api/pull -H 'Content-Type: application/json' -d '{\"name\":\"phi4:latest\",\"stream\":false}' &&
+          echo '[INIT] ✓ Phi4 pulled' &&
+          echo '[INIT] Pulling llama2:latest...' &&
+          curl -s -X POST http://ollama:11434/api/pull -H 'Content-Type: application/json' -d '{\"name\":\"llama2:latest\",\"stream\":false}' &&
+          echo '[INIT] ✓ Llama2 pulled' &&
+          break;
+        fi &&
+        echo '[INIT] Attempt $$i - Waiting...' &&
+        sleep 2;
+      done &&
+      echo '[INIT] ✓ Models initialization complete'
+      "
+    restart: on-failure
+
+  # ================================
+  # APPLICATION LAYER
+  # ================================
+
+  # Hotel Search Engine Service
+  hotel-search:
+    build:
+      context: ./hotel-search-engine
+      dockerfile: Dockerfile
+    container_name: tbo-hotel-search
+    ports:
+      - "5000:5000"
+    environment:
+      FLASK_APP: app.py
+      FLASK_ENV: production
+      MAX_RESULTS: 10
+      PORT: 5000
+      HOST: 0.0.0.0
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      - redis
+    networks:
+      - tbo-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # TBO Travel Data Pipeline (with Qdrant ingestion)
+  tbo-pipeline:
+    build:
+      context: ./tbo
+      dockerfile: Dockerfile
+    container_name: tbo-pipeline
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+      KAFKA_BROKER: kafka:9092
+      PYTHONUNBUFFERED: 1
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ./tbo:/app
+    networks:
+      - tbo-network
+    restart: unless-stopped
+
+  # Orchestrator Agent (LLM + RAG + Routing)
+  orchestrator-agent:
+    build:
+      context: ./orchestrator-agent
+      dockerfile: Dockerfile
+    container_name: tbo-orchestrator
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - DEBUG=false
+      - OLLAMA_HOST=http://ollama:11434
+      - DATABASE_URL=postgresql://${DB_USER:-user}:${DB_PASSWORD:-password}@postgres:5432/orchestrator
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-}
+      - HOTEL_SEARCH_URL=http://hotel-search:5000
+      - PERSONALIZATION_AGENT_URL=http://personalization-agent:8001
+      - HOTEL_SEARCH_AGENT_URL=http://hotel-search-agent:8002
+      - AMADEUS_AGENT_URL=http://amadeus-agent:8003
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_LEVEL=INFO
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      model-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      hotel-search:
+        condition: service_started
+      tbo-pipeline:
+        condition: service_started
+    volumes:
+      - ./orchestrator-agent:/app
+    networks:
+      - tbo-network
+    restart: unless-stopped
+
+  # ================================
+  # MONITORING & MANAGEMENT
+  # ================================
+
+  # Adminer - Database Management UI
+  adminer:
+    image: adminer:latest
+    container_name: tbo-adminer
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+    networks:
+      - tbo-network
+    restart: unless-stopped
+
+networks:
+  tbo-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:
+  qdrant_storage:
+  ollama_data:

@@ -15,8 +15,8 @@ class ModelRouter:
         self.ollama_host = settings.ollama_host
         self.phi4_model = settings.phi4_model
         self.llama_model = settings.llama_model
-        # Increase timeout to 300 seconds (5 minutes) for large models
-        self.timeout = 300
+        # Increase timeout to 1200 seconds (20 minutes) for LLM inference on CPU
+        self.timeout = 1200
         self.max_retries = 2
 
     async def route_query(

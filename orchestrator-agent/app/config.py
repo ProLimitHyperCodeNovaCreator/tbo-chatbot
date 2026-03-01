@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     hotel_search_agent_url: str = "http://localhost:8002"
     amadeus_agent_url: str = "http://localhost:8003"
 
+    # Integration Endpoints
+    hotel_search_url: str = "http://localhost:5000"
+    qdrant_host: str = "localhost"
+    qdrant_port: int = 6333
+
     # API Configuration
     api_host: str = "0.0.0.0"
     api_port: int = 8000
