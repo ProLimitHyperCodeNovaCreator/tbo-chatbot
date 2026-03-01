@@ -326,7 +326,7 @@ export default function ChatArea({
           <Button
             onClick={handleSend}
             disabled={!input.trim() || isLoading || isRecording}
-            className="bg-orange-500 hover:bg-orange-600 text-white rounded-full p-3 h-full flex items-center justify-center transition-colors disabled:opacity-50"
+            className="bg-orange-500 hover:bg-orange-600 text-white rounded-full p-3 h-auto flex items-center justify-center transition-colors disabled:opacity-50"
           >
             <Send size={18} />
           </Button>
