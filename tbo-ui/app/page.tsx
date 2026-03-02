@@ -1,172 +1,423 @@
 'use client';
 
-import Image from 'next/image';
-import { Button } from '@/components/ui/button';
-import { Search, BarChart3, Zap, Hotel, Plane, Activity, Repeat2, Shield } from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import Header from '@/components/Header';
+import Sidebar from '@/components/Sidebar';
+import ChatArea from '@/components/ChatArea';
+import TravelVoucherPreview from '@/components/TravelVoucherPreview';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  mockAgent,
+  mockHotels,
+  mockTransport,
+  mockQuote,
+  mockHistory,
+  mockSavedPlans,
+  mockReports,
+  mockRecommendedHotels,
+} from '@/lib/mockData';
+import { ChatMessage, HotelOption, QuoteSummary } from '@/lib/types';
+import type { TravelPlanDetails } from '@/components/TravelPlanForm';
 
 export default function Home() {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [selectedHotel, setSelectedHotel] = useState<string | undefined>();
+  const [selectedTransport, setSelectedTransport] = useState<string | undefined>();
+  const [isLoading, setIsLoading] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [travelPlanResponseMessageId, setTravelPlanResponseMessageId] = useState<string | null>(null);
+  const [showVoucherPreview, setShowVoucherPreview] = useState(false);
+  const [voucherQuote, setVoucherQuote] = useState<QuoteSummary>(mockQuote);
+  const [voucherHotel, setVoucherHotel] = useState<HotelOption | null>(null);
+  const [voucherTransport, setVoucherTransport] = useState<typeof mockTransport[0] | null>(null);
+  const [showTravelPlanForm, setShowTravelPlanForm] = useState(false);
+  const [travelPlanFormDestination, setTravelPlanFormDestination] = useState('');
+  const [travelPlanDetails, setTravelPlanDetails] = useState<TravelPlanDetails | null>(null);
+
+  const displayQuote = useMemo((): QuoteSummary => {
+    const details = travelPlanDetails;
+    const nights = details?.numberOfDays ?? 4;
+    const dest = details?.destination ?? mockQuote.destination;
+    const dateStr = details?.startDate
+      ? `${new Date(details.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} (+${nights} days)`
+      : mockQuote.date;
+    const hotel = selectedHotel ? mockHotels.find((h) => h.id === selectedHotel) : undefined;
+    const transport = selectedTransport ? mockTransport.find((t) => t.id === selectedTransport) : undefined;
+    const total = (hotel ? hotel.price * nights : 0) + (transport ? transport.price : 0) || mockQuote.minPrice;
+    return {
+      destination: dest,
+      date: dateStr,
+      hotelCost: hotel?.price ?? mockQuote.hotelCost,
+      hotelCostUnit: hotel ? '/night' : mockQuote.hotelCostUnit,
+      transportCost: transport?.price ?? mockQuote.transportCost,
+      transportCostUnit: transport?.priceUnit ?? mockQuote.transportCostUnit,
+      minPrice: total || mockQuote.minPrice,
+      maxPrice: total || mockQuote.maxPrice,
+      currency: mockQuote.currency,
+    };
+  }, [travelPlanDetails, selectedHotel, selectedTransport]);
+
+  const extractDestination = (text: string): string => {
+    const lower = text.toLowerCase();
+    const toMatch = lower.match(/(?:to|visit|in|for)\s+([a-z][a-z\s]{1,25}?)(?=\s|,|\.|$)/i);
+    if (toMatch) return toMatch[1].trim().replace(/\s+/g, ' ');
+    const cityMatch = text.match(/\b(Singapore|Paris|London|Dubai|Bali|Tokyo|New York|Mumbai|Delhi|Bangalore)\b/i);
+    return cityMatch ? cityMatch[1] : '';
+  };
+
+  // Detect if user message indicates they want a travel plan
+  const isTravelPlanIntent = (text: string) => {
+    const lower = text.toLowerCase();
+    const keywords = [
+      'travel plan', 'plan my trip', 'plan a trip', 'plan our trip',
+      'book a trip', 'book my trip', 'i want a travel plan', 'i need a travel plan',
+      'create a travel plan', 'get a travel plan', 'hotels in', 'hotels for',
+      'flights to', 'flights for', 'options for', 'looking for hotels',
+      'recommend hotels', 'hotel options', 'transport options', 'vacation to',
+      'trip to', 'trip for', 'travel to', 'going to', 'visit '
+    ];
+    return keywords.some(k => lower.includes(k));
+  };
+
+  const recognitionRef = useRef<any>(null);
+
+  // Initialize Speech Recognition on mount
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const SpeechRecognition =
+        (window as any).SpeechRecognition ||
+        (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        recognitionRef.current = new SpeechRecognition();
+        recognitionRef.current.continuous = false;
+        recognitionRef.current.interimResults = false;
+        recognitionRef.current.lang = 'en-US';
+      }
+    }
+  }, []);
+
+  // ElevenLabs Text-to-Speech function
+  const speakResponse = async (text: string) => {
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+
+      if (!response.ok) throw new Error('Audio fetch failed');
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+
+      audio.play();
+    } catch (error) {
+      console.error('Error playing audio:', error);
+    }
+  };
+
+  // Main logic to handle messaging (both text and voice)
+  const processMessage = async (
+    text: string,
+    isVoiceInput: boolean = false,
+  ) => {
+    if (!text.trim() || isLoading) return;
+
+    const userMessage: ChatMessage = {
+      id: Date.now().toString(),
+      sender: 'user',
+      message: text.trim(),
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+
+    const userRequestedTravelPlan = isTravelPlanIntent(text);
+
+    // Only show the full "planning" loading state (steps) when user asked for a travel plan
+    const activitySequence = [
+      '🔍 Analyzing request',
+      '🌐 Searching for hotels & flights',
+      '💰 Comparing prices',
+      '📊 Analyzing patterns',
+      '🎯 Generating recommendations',
+    ];
+
+    const thinkingMessageId = (Date.now() + 1).toString();
+    const thinkingMessage: ChatMessage = {
+      id: thinkingMessageId,
+      sender: 'agent',
+      avatar: mockAgent.image,
+      name: mockAgent.name,
+      message: '',
+      isLoading: true,
+      agentActivity: userRequestedTravelPlan ? activitySequence : [],
+      currentActivity: userRequestedTravelPlan ? activitySequence[0] : undefined,
+    };
+
+    setMessages((prev) => [...prev, thinkingMessage]);
+    setIsLoading(true);
+
+    let currentActivityIndex = 0;
+    const activityInterval = setInterval(() => {
+      if (!userRequestedTravelPlan) return;
+      if (currentActivityIndex < activitySequence.length - 1) {
+        currentActivityIndex++;
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === thinkingMessageId
+              ? {
+                  ...msg,
+                  currentActivity: activitySequence[currentActivityIndex],
+                }
+              : msg
+          )
+        );
+      }
+    }, 800);
+
+    try {
+      // 1. Send text to Gemini API (or your AI endpoint)
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+
+      const replyText = data.text;
+
+      clearInterval(activityInterval);
+
+      // 2. Replace thinking message with actual response
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === thinkingMessageId
+            ? {
+                ...msg,
+                message: replyText,
+                isLoading: false,
+                currentActivity: '✅ Complete',
+                agentActivity: [],
+              }
+            : msg
+        )
+      );
+
+      // Show travel plan results (quote, hotels, transport) only when user asked for a travel plan
+      if (userRequestedTravelPlan) {
+        setTravelPlanResponseMessageId(thinkingMessageId);
+      }
+
+      // 3. ONLY play the ElevenLabs audio if the user used the microphone
+      if (isVoiceInput) {
+        speakResponse(replyText);
+      }
+    } catch (error) {
+      console.error('Failed to fetch response:', error);
+      clearInterval(activityInterval);
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === thinkingMessageId
+            ? {
+                ...msg,
+                message: 'Sorry, I encountered an error connecting to the AI.',
+                isLoading: false,
+                currentActivity: '❌ Error',
+                agentActivity: [],
+              }
+            : msg
+        )
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Triggered when user sends a text message
+  const handleSendMessage = (message: string) => {
+    const text = message.trim();
+    if (!text) return;
+    // If user is asking for a travel plan, first show the details form instead of calling the API
+    if (isTravelPlanIntent(text) && !isLoading) {
+      const userMsg: ChatMessage = {
+        id: Date.now().toString(),
+        sender: 'user',
+        message: text,
+      };
+      setMessages((prev) => [...prev, userMsg]);
+      const agentMsg: ChatMessage = {
+        id: (Date.now() + 1).toString(),
+        sender: 'agent',
+        avatar: mockAgent.image,
+        name: mockAgent.name,
+        message: "I'd love to help plan your trip! Please share a few details below so I can create your itinerary.",
+      };
+      setMessages((prev) => [...prev, agentMsg]);
+      setTravelPlanFormDestination(extractDestination(text));
+      setShowTravelPlanForm(true);
+      return;
+    }
+    processMessage(text, false);
+  };
+
+  const handleTravelPlanSubmit = (details: TravelPlanDetails) => {
+    setShowTravelPlanForm(false);
+    setTravelPlanDetails(details);
+    const startFormatted = new Date(details.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    const summary = `Create a travel plan from ${details.fromCity} to ${details.destination}, ${details.numberOfDays} days, starting ${startFormatted}, for ${details.travelers} traveler${details.travelers > 1 ? 's' : ''}.${details.budget ? ` Budget: ${details.budget}.` : ''}`;
+    processMessage(summary, false);
+  };
+
+  // Triggered when user clicks the Microphone
+  const handleToggleVoice = () => {
+    if (!recognitionRef.current) {
+      alert('Voice input isn\'t supported in this browser. Try Chrome or Edge.');
+      return;
+    }
+
+    if (isRecording) {
+      recognitionRef.current.stop();
+      setIsRecording(false);
+    } else {
+      recognitionRef.current.onresult = (e: any) => {
+        const transcript = e.results[0][0].transcript;
+        if (transcript) {
+          processMessage(transcript, true); // true = speak back via ElevenLabs!
+        }
+      };
+
+      recognitionRef.current.onerror = (e: any) => {
+        if (e.error !== 'aborted')
+          console.error('Speech recognition error:', e.error);
+        setIsRecording(false);
+      };
+
+      recognitionRef.current.onend = () => {
+        setIsRecording(false);
+      };
+
+      recognitionRef.current.start();
+      setIsRecording(true);
+    }
+  };
+
+  const handleGeneratePDF = () => {
+    const hotel = selectedHotel ? mockHotels.find((h) => h.id === selectedHotel) ?? null : null;
+    const transport = selectedTransport ? mockTransport.find((t) => t.id === selectedTransport) ?? null : null;
+    const nights = travelPlanDetails?.numberOfDays ?? 4;
+    const hotelCost = hotel ? hotel.price * nights : 0;
+    const transportCost = transport ? transport.price : 0;
+    const total = hotelCost + transportCost;
+    const currency = '$';
+    setVoucherQuote({
+      destination: travelPlanDetails?.destination ?? mockQuote.destination,
+      date: travelPlanDetails?.startDate
+        ? `${new Date(travelPlanDetails.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} (+${nights} days)`
+        : mockQuote.date,
+      hotelCost: hotel?.price ?? mockQuote.hotelCost,
+      hotelCostUnit: hotel ? `/night (${nights} nights)` : mockQuote.hotelCostUnit,
+      transportCost: transport?.price ?? mockQuote.transportCost,
+      transportCostUnit: transport?.priceUnit ?? mockQuote.transportCostUnit,
+      minPrice: total || mockQuote.minPrice,
+      maxPrice: total || mockQuote.maxPrice,
+      currency,
+    });
+    setVoucherHotel(hotel);
+    setVoucherTransport(transport);
+    setShowVoucherPreview(true);
+  };
+
   return (
-    <div className="min-h-screen bg-white">
-      {/* Navigation */}
-      <nav className="flex items-center justify-between px-4 sm:px-6 lg:px-8 py-4 bg-white shadow-sm">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-gradient-to-r from-blue-600 to-orange-500 rounded-lg flex items-center justify-center">
-            <span className="text-white font-bold text-sm">TBO</span>
-          </div>
-          <span className="font-bold text-lg text-gray-800">tbo</span>
-        </div>
-        
-        <div className="hidden md:flex items-center gap-8">
-          <a href="#" className="text-gray-600 hover:text-gray-900 text-sm font-medium">Products</a>
-          <a href="#" className="text-gray-600 hover:text-gray-900 text-sm font-medium">Recent Offers</a>
-          <a href="#" className="text-gray-600 hover:text-gray-900 text-sm font-medium">Contact</a>
-        </div>
-        
-        <Button className="bg-orange-500 hover:bg-orange-600 text-white">
-          Get Options
-        </Button>
-      </nav>
+    <div className="flex flex-col h-screen bg-gray-50 overflow-hidden" data-chat-app>
+      {/* Header */}
+      <Header onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
 
-      {/* Hero Section */}
-      <section className="relative px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-24">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12 items-center">
-            {/* Left Content */}
-            <div className="space-y-6 z-10">
-              <div>
-                <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-gray-900 leading-tight mb-4">
-                  Meet Your Intelligent Travel Agent Copilot
-                </h1>
-                <p className="text-lg text-gray-600">
-                  AI powered assistant helping travel agents make better, faster decisions.
-                </p>
-              </div>
-              
-              <Button size="lg" className="bg-orange-500 hover:bg-orange-600 text-white w-fit">
-                Get Options
-              </Button>
-            </div>
-
-            {/* Right Content - Hero Image with Background */}
-            <div className="relative h-80 sm:h-96 lg:h-[500px]">
-              <Image
-                src="/bg-hero.png"
-                alt="Travel AI Copilot"
-                fill
-                className="object-cover rounded-xl"
-                priority
+      {/* Main Content */}
+      <div className="flex flex-1 overflow-hidden">
+        {/* Sidebar - Mobile Drawer */}
+        {sidebarOpen && (
+          <div className="fixed inset-0 z-30 md:hidden bg-black/50" onClick={() => setSidebarOpen(false)}>
+            <div onClick={(e) => e.stopPropagation()} className="h-full overflow-auto">
+              <Sidebar
+                history={mockHistory}
+                savedPlans={mockSavedPlans}
+                reports={mockReports}
+                agent={mockAgent}
+                isOpen={sidebarOpen}
               />
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Background wave pattern */}
-        <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-blue-50 to-transparent pointer-events-none" />
-      </section>
+        {/* Sidebar - Desktop */}
+        <Sidebar
+          history={mockHistory}
+          savedPlans={mockSavedPlans}
+          reports={mockReports}
+          agent={mockAgent}
+        />
 
-      {/* Features Section */}
-      <section className="px-4 sm:px-6 lg:px-8 py-16 sm:py-20 bg-gray-50">
-        <div className="max-w-7xl mx-auto">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {/* Feature 1 */}
-            <div className="flex flex-col items-center text-center space-y-4">
-              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-                <Search className="w-8 h-8 text-blue-600" />
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900">Live Search</h3>
-              <p className="text-gray-600">
-                Get real-time comprehensive search results powered by advanced algorithms.
-              </p>
-            </div>
-
-            {/* Feature 2 */}
-            <div className="flex flex-col items-center text-center space-y-4">
-              <div className="w-16 h-16 bg-orange-100 rounded-full flex items-center justify-center">
-                <BarChart3 className="w-8 h-8 text-orange-500" />
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900">Smart Comparisons</h3>
-              <p className="text-gray-600">
-                Compare and analyze travel options instantly with intelligent insights.
-              </p>
-            </div>
-
-            {/* Feature 3 */}
-            <div className="flex flex-col items-center text-center space-y-4">
-              <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center">
-                <Zap className="w-8 h-8 text-blue-600" />
-              </div>
-              <h3 className="text-xl font-semibold text-gray-900">Multimodal Output</h3>
-              <p className="text-gray-600">
-                Get comprehensive presentations across all your preferred platforms.
-              </p>
-            </div>
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col overflow-hidden p-4 bg-white">
+          <div className="flex-1 bg-white rounded-lg shadow flex flex-col overflow-hidden min-w-0">
+            <ChatArea
+              messages={messages}
+              onSendMessage={handleSendMessage}
+              onToggleVoice={handleToggleVoice}
+              hotels={mockHotels}
+              selectedHotelId={selectedHotel}
+              onSelectHotel={setSelectedHotel}
+              transportOptions={mockTransport}
+              selectedTransportId={selectedTransport}
+              onSelectTransport={setSelectedTransport}
+              isLoading={isLoading}
+              isRecording={isRecording}
+              travelPlanResponseMessageId={travelPlanResponseMessageId}
+              quote={displayQuote}
+              recommendedHotels={mockRecommendedHotels}
+              onGeneratePDF={handleGeneratePDF}
+              showTravelPlanForm={showTravelPlanForm}
+              travelPlanFormDestination={travelPlanFormDestination}
+              onTravelPlanSubmit={handleTravelPlanSubmit}
+              travelPlanDetails={travelPlanDetails}
+            />
           </div>
         </div>
-      </section>
+      </div>
 
-      {/* Services Section */}
-      <section className="px-4 sm:px-6 lg:px-8 py-16 sm:py-20">
-        <div className="max-w-7xl mx-auto">
-          <h2 className="text-3xl sm:text-4xl font-bold text-center text-gray-900 mb-16">
-            One Platform For Everything Travel
-          </h2>
-
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 sm:gap-8">
-            {/* Service 1 */}
-            <div className="flex flex-col items-center text-center space-y-3">
-              <div className="w-14 h-14 bg-blue-100 rounded-lg flex items-center justify-center">
-                <Hotel className="w-7 h-7 text-blue-600" />
-              </div>
-              <p className="font-semibold text-gray-900 text-sm sm:text-base">Hotels</p>
-            </div>
-
-            {/* Service 2 */}
-            <div className="flex flex-col items-center text-center space-y-3">
-              <div className="w-14 h-14 bg-orange-100 rounded-lg flex items-center justify-center">
-                <Plane className="w-7 h-7 text-orange-500" />
-              </div>
-              <p className="font-semibold text-gray-900 text-sm sm:text-base">Flights</p>
-            </div>
-
-            {/* Service 3 */}
-            <div className="flex flex-col items-center text-center space-y-3">
-              <div className="w-14 h-14 bg-blue-100 rounded-lg flex items-center justify-center">
-                <Activity className="w-7 h-7 text-blue-600" />
-              </div>
-              <p className="font-semibold text-gray-900 text-sm sm:text-base">Activities</p>
-            </div>
-
-            {/* Service 4 */}
-            <div className="flex flex-col items-center text-center space-y-3">
-              <div className="w-14 h-14 bg-orange-100 rounded-lg flex items-center justify-center">
-                <Repeat2 className="w-7 h-7 text-orange-500" />
-              </div>
-              <p className="font-semibold text-gray-900 text-sm sm:text-base">Transfers</p>
-            </div>
-
-            {/* Service 5 */}
-            <div className="flex flex-col items-center text-center space-y-3">
-              <div className="w-14 h-14 bg-blue-100 rounded-lg flex items-center justify-center">
-                <Shield className="w-7 h-7 text-blue-600" />
-              </div>
-              <p className="font-semibold text-gray-900 text-sm sm:text-base">Visa & Insurance</p>
+      {/* Travel Voucher PDF Preview Dialog */}
+      <Dialog open={showVoucherPreview} onOpenChange={setShowVoucherPreview}>
+        <DialogContent
+          className="!max-w-[96vw] w-full max-h-[90vh] overflow-auto p-0 gap-0 sm:!max-w-[96vw]"
+          showCloseButton={true}
+        >
+          <DialogHeader className="sr-only">
+            <DialogTitle>Travel Voucher Preview</DialogTitle>
+          </DialogHeader>
+          <div className="p-6 flex justify-center" style={{ minWidth: '210mm' }}>
+            <div style={{ width: '210mm', flexShrink: 0 }}>
+              <TravelVoucherPreview
+              quote={voucherQuote}
+              selectedHotel={voucherHotel}
+              selectedTransport={voucherTransport}
+              agent={mockAgent}
+              tripDetails={travelPlanDetails}
+              onClose={() => setShowVoucherPreview(false)}
+              showActions={true}
+            />
             </div>
           </div>
-
-          {/* Decorative Wave at Bottom */}
-          <div className="mt-16 relative h-32">
-            <div className="absolute inset-0 bg-gradient-to-r from-blue-500 to-blue-600 rounded-t-full opacity-90" />
-            <div className="absolute inset-0 bg-gradient-to-r from-orange-400 to-orange-500 rounded-t-full opacity-30 translate-y-2" />
-          </div>
-        </div>
-      </section>
-
-      {/* Footer */}
-      <footer className="bg-gray-900 text-white px-4 sm:px-6 lg:px-8 py-8">
-        <div className="max-w-7xl mx-auto text-center text-gray-400 text-sm">
-          <p>&copy; 2024 TBO Travel AI Copilot. All rights reserved.</p>
-        </div>
-      </footer>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
