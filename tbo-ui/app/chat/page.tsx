@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import Header from '@/components/Header';
 import Sidebar from '@/components/Sidebar';
 import ChatArea from '@/components/ChatArea';
@@ -38,8 +38,31 @@ export default function Home() {
   const [voucherTransport, setVoucherTransport] = useState<typeof mockTransport[0] | null>(null);
   const [showTravelPlanForm, setShowTravelPlanForm] = useState(false);
   const [travelPlanFormDestination, setTravelPlanFormDestination] = useState('');
+  const [travelPlanDetails, setTravelPlanDetails] = useState<TravelPlanDetails | null>(null);
 
-  // Try to extract destination from user message (e.g. "trip to Singapore" -> Singapore)
+  const displayQuote = useMemo((): QuoteSummary => {
+    const details = travelPlanDetails;
+    const nights = details?.numberOfDays ?? 4;
+    const dest = details?.destination ?? mockQuote.destination;
+    const dateStr = details?.startDate
+      ? `${new Date(details.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} (+${nights} days)`
+      : mockQuote.date;
+    const hotel = selectedHotel ? mockHotels.find((h) => h.id === selectedHotel) : undefined;
+    const transport = selectedTransport ? mockTransport.find((t) => t.id === selectedTransport) : undefined;
+    const total = (hotel ? hotel.price * nights : 0) + (transport ? transport.price : 0) || mockQuote.minPrice;
+    return {
+      destination: dest,
+      date: dateStr,
+      hotelCost: hotel?.price ?? mockQuote.hotelCost,
+      hotelCostUnit: hotel ? '/night' : mockQuote.hotelCostUnit,
+      transportCost: transport?.price ?? mockQuote.transportCost,
+      transportCostUnit: transport?.priceUnit ?? mockQuote.transportCostUnit,
+      minPrice: total || mockQuote.minPrice,
+      maxPrice: total || mockQuote.maxPrice,
+      currency: mockQuote.currency,
+    };
+  }, [travelPlanDetails, selectedHotel, selectedTransport]);
+
   const extractDestination = (text: string): string => {
     const lower = text.toLowerCase();
     const toMatch = lower.match(/(?:to|visit|in|for)\s+([a-z][a-z\s]{1,25}?)(?=\s|,|\.|$)/i);
@@ -248,8 +271,9 @@ export default function Home() {
 
   const handleTravelPlanSubmit = (details: TravelPlanDetails) => {
     setShowTravelPlanForm(false);
+    setTravelPlanDetails(details);
     const startFormatted = new Date(details.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-    const summary = `Create a travel plan from ${details.fromCity} to ${details.destination}, ${details.numberOfDays} days, starting ${startFormatted}, for ${details.travelers} traveler${details.travelers > 1 ? 's' : ''}.`;
+    const summary = `Create a travel plan from ${details.fromCity} to ${details.destination}, ${details.numberOfDays} days, starting ${startFormatted}, for ${details.travelers} traveler${details.travelers > 1 ? 's' : ''}.${details.budget ? ` Budget: ${details.budget}.` : ''}`;
     processMessage(summary, false);
   };
 
@@ -287,9 +311,28 @@ export default function Home() {
   };
 
   const handleGeneratePDF = () => {
-    setVoucherQuote(mockQuote);
-    setVoucherHotel(selectedHotel ? mockHotels.find((h) => h.id === selectedHotel) ?? null : null);
-    setVoucherTransport(selectedTransport ? mockTransport.find((t) => t.id === selectedTransport) ?? null : null);
+    const hotel = selectedHotel ? mockHotels.find((h) => h.id === selectedHotel) ?? null : null;
+    const transport = selectedTransport ? mockTransport.find((t) => t.id === selectedTransport) ?? null : null;
+    const nights = travelPlanDetails?.numberOfDays ?? 4;
+    const hotelCost = hotel ? hotel.price * nights : 0;
+    const transportCost = transport ? transport.price : 0;
+    const total = hotelCost + transportCost;
+    const currency = '$';
+    setVoucherQuote({
+      destination: travelPlanDetails?.destination ?? mockQuote.destination,
+      date: travelPlanDetails?.startDate
+        ? `${new Date(travelPlanDetails.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} (+${nights} days)`
+        : mockQuote.date,
+      hotelCost: hotel?.price ?? mockQuote.hotelCost,
+      hotelCostUnit: hotel ? `/night (${nights} nights)` : mockQuote.hotelCostUnit,
+      transportCost: transport?.price ?? mockQuote.transportCost,
+      transportCostUnit: transport?.priceUnit ?? mockQuote.transportCostUnit,
+      minPrice: total || mockQuote.minPrice,
+      maxPrice: total || mockQuote.maxPrice,
+      currency,
+    });
+    setVoucherHotel(hotel);
+    setVoucherTransport(transport);
     setShowVoucherPreview(true);
   };
 
@@ -339,12 +382,13 @@ export default function Home() {
               isLoading={isLoading}
               isRecording={isRecording}
               travelPlanResponseMessageId={travelPlanResponseMessageId}
-              quote={mockQuote}
+              quote={displayQuote}
               recommendedHotels={mockRecommendedHotels}
               onGeneratePDF={handleGeneratePDF}
               showTravelPlanForm={showTravelPlanForm}
               travelPlanFormDestination={travelPlanFormDestination}
               onTravelPlanSubmit={handleTravelPlanSubmit}
+              travelPlanDetails={travelPlanDetails}
             />
           </div>
         </div>
@@ -366,6 +410,7 @@ export default function Home() {
               selectedHotel={voucherHotel}
               selectedTransport={voucherTransport}
               agent={mockAgent}
+              tripDetails={travelPlanDetails}
               onClose={() => setShowVoucherPreview(false)}
               showActions={true}
             />

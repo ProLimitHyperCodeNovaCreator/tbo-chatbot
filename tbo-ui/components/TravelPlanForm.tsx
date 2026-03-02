@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { MapPin, Calendar, Users, Plane } from 'lucide-react';
+import { MapPin, Calendar, Users, Plane, Wallet } from 'lucide-react';
 
 export interface TravelPlanDetails {
   destination: string;
@@ -10,6 +10,7 @@ export interface TravelPlanDetails {
   startDate: string;
   numberOfDays: number;
   travelers: number;
+  budget?: string;
 }
 
 interface TravelPlanFormProps {
@@ -34,6 +35,7 @@ export default function TravelPlanForm({
   const [startDate, setStartDate] = useState(defaultStartDate());
   const [numberOfDays, setNumberOfDays] = useState(4);
   const [travelers, setTravelers] = useState(2);
+  const [budget, setBudget] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -44,6 +46,7 @@ export default function TravelPlanForm({
       startDate,
       numberOfDays,
       travelers,
+      budget: budget.trim() || undefined,
     });
   };
 
@@ -115,6 +118,18 @@ export default function TravelPlanForm({
                 value={travelers}
                 onChange={(e) => setTravelers(parseInt(e.target.value, 10) || 1)}
                 className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none max-w-[120px]"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                <Wallet className="inline w-3.5 h-3.5 mr-1" /> Budget (optional)
+              </label>
+              <input
+                type="text"
+                value={budget}
+                onChange={(e) => setBudget(e.target.value)}
+                placeholder="e.g. 50000, $1,200, or 50k-60k"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none"
               />
             </div>
           </div>

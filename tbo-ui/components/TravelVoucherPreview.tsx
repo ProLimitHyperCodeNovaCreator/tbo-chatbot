@@ -4,6 +4,7 @@ import React, { useRef, useMemo, useId } from 'react';
 import { QuoteSummary, HotelOption, TransportOption, Agent } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Printer, X } from 'lucide-react';
+import type { TravelPlanDetails } from '@/components/TravelPlanForm';
 
 function WaveDivider({ id }: { id: string }) {
   return (
@@ -36,14 +37,27 @@ const DEFAULT_FLIGHTS = {
 };
 
 const CLIENT_NAME = 'John Doe & Guest';
-const TRAVEL_DATES = '05 Dec 2024 – 09 Dec 2024';
 const SUPPORT_NUMBER = '+1 987-654-3210';
+
+function formatDateShort(d: Date) {
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function buildItineraryFromNights(nights: number, destination: string): string[] {
+  if (nights <= 0) return DEFAULT_ITINERARY;
+  const items: string[] = [];
+  items.push('Day 1: Arrival & Hotel Check-in');
+  for (let i = 2; i < nights; i++) items.push(`Day ${i}: Explore ${destination}`);
+  if (nights >= 2) items.push(`Day ${nights}: Departure`);
+  return items.length ? items : DEFAULT_ITINERARY;
+}
 
 interface TravelVoucherPreviewProps {
   quote: QuoteSummary;
   selectedHotel?: HotelOption | null;
   selectedTransport?: TransportOption | null;
   agent: Agent;
+  tripDetails?: TravelPlanDetails | null;
   bookingRef?: string;
   onClose?: () => void;
   onPrint?: () => void;
@@ -55,6 +69,7 @@ export default function TravelVoucherPreview({
   selectedHotel,
   selectedTransport,
   agent,
+  tripDetails,
   bookingRef: bookingRefProp,
   onClose,
   onPrint,
@@ -64,9 +79,23 @@ export default function TravelVoucherPreview({
   const bookingRef = useMemo(() => bookingRefProp || 'PNR' + Math.random().toString().slice(2, 9), [bookingRefProp]);
   const waveId1 = useId();
   const waveId2 = useId();
-  const nights = 4;
+  const nights = tripDetails?.numberOfDays ?? 4;
   const totalCost = quote.maxPrice || quote.minPrice || 0;
   const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=80x80&data=${encodeURIComponent(bookingRef)}`;
+
+  const startDate = tripDetails?.startDate ? new Date(tripDetails.startDate) : new Date('2024-12-05');
+  const endDate = useMemo(() => {
+    const e = new Date(startDate);
+    e.setDate(e.getDate() + nights);
+    return e;
+  }, [startDate, nights]);
+  const travelDatesStr = `${formatDateShort(startDate)} – ${formatDateShort(endDate)}`;
+  const clientName = tripDetails ? `${tripDetails.travelers} traveler${tripDetails.travelers > 1 ? 's' : ''}` : CLIENT_NAME;
+  const fromCity = tripDetails?.fromCity ?? 'Mumbai';
+  const dest = quote.destination;
+  const departureRoute = `${fromCity} → ${dest}`;
+  const returnRoute = `${dest} → ${fromCity}`;
+  const itinerary = useMemo(() => buildItineraryFromNights(nights, dest), [nights, dest]);
 
   const handlePrint = () => {
     if (onPrint) {
@@ -140,8 +169,11 @@ export default function TravelVoucherPreview({
               </div>
             </div>
             <div className="mt-4 space-y-1 text-sm text-gray-700">
-              <p><span className="font-medium">Client:</span> {CLIENT_NAME}</p>
-              <p><span className="font-medium">Travel Dates:</span> {TRAVEL_DATES}</p>
+              <p><span className="font-medium">Client:</span> {clientName}</p>
+              <p><span className="font-medium">Travel Dates:</span> {travelDatesStr}</p>
+              {tripDetails?.budget && (
+                <p><span className="font-medium">Budget:</span> {tripDetails.budget}</p>
+              )}
               <p><span className="font-medium">Total Package Cost:</span> {quote.currency}{totalCost.toLocaleString()}</p>
             </div>
           </div>
@@ -149,9 +181,10 @@ export default function TravelVoucherPreview({
             <h3 className="font-semibold text-gray-900 mb-3">Travel Summary & Booking Confirmation</h3>
             <ul className="space-y-2 text-sm text-gray-700">
               <li>Booking Reference: {bookingRef}</li>
-              <li>Client Name: {CLIENT_NAME}</li>
+              <li>Client Name: {clientName}</li>
               <li>Destination: {quote.destination}</li>
-              <li>Travel Dates: {TRAVEL_DATES}</li>
+              <li>Travel Dates: {travelDatesStr}</li>
+              {tripDetails?.budget && <li>Budget: {tripDetails.budget}</li>}
               <li className="font-semibold">Total Package Cost: {quote.currency}{totalCost.toLocaleString()}</li>
             </ul>
           </div>
@@ -163,8 +196,8 @@ export default function TravelVoucherPreview({
             <div className="space-y-2 text-sm">
               <p><span className="font-medium">Hotel:</span> {selectedHotel.name} - {selectedHotel.tier && selectedHotel.tier.charAt(0).toUpperCase() + selectedHotel.tier.slice(1)} Room</p>
               <p><span className="font-medium">Address:</span> {quote.destination} (confirm at booking)</p>
-              <p><span className="font-medium">Check-in:</span> 05 Dec 2024 | 3:00 PM</p>
-              <p><span className="font-medium">Check-out:</span> 09 Dec 2024 | 11:00 AM</p>
+              <p><span className="font-medium">Check-in:</span> {formatDateShort(startDate)} | 3:00 PM</p>
+              <p><span className="font-medium">Check-out:</span> {formatDateShort(endDate)} | 11:00 AM</p>
               <p>Booking Status: <span className="text-green-600 font-medium">Confirmed</span></p>
               <p>Cancellation Policy: Free cancellation 48 hours prior.</p>
             </div>
@@ -182,9 +215,10 @@ export default function TravelVoucherPreview({
             <h3 className="font-semibold text-gray-900 mb-3">Travel Summary & Booking Confirmation</h3>
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm text-gray-700">
               <span>Booking Reference:</span><span>{bookingRef}</span>
-              <span>Client Name:</span><span>{CLIENT_NAME}</span>
+              <span>Client Name:</span><span>{clientName}</span>
               <span>Destination:</span><span>{quote.destination}</span>
-              <span>Travel Dates:</span><span>{TRAVEL_DATES}</span>
+              <span>Travel Dates:</span><span>{travelDatesStr}</span>
+              {tripDetails?.budget && <><span>Budget:</span><span>{tripDetails.budget}</span></>}
             </div>
             <div className="mt-3 flex justify-end">
               <span className="bg-orange-500 text-white px-3 py-1 rounded font-bold">{quote.currency}{totalCost.toLocaleString()}</span>
@@ -196,14 +230,13 @@ export default function TravelVoucherPreview({
               <div className="space-y-3 text-sm">
                 <div>
                   <p className="font-medium text-gray-900">Departure Flight</p>
-                  <p>{DEFAULT_FLIGHTS.departure.route}</p>
-                  <p>Flight: {DEFAULT_FLIGHTS.departure.flight} {DEFAULT_FLIGHTS.departure.date} | {DEFAULT_FLIGHTS.departure.time}</p>
-                  <p>Class: {DEFAULT_FLIGHTS.departure.class}</p>
+                  <p>{departureRoute}</p>
+                  <p>Date: {formatDateShort(startDate)} | 10:05 PM | Economy</p>
                 </div>
                 <div>
                   <p className="font-medium text-gray-900">Return Flight</p>
-                  <p>{DEFAULT_FLIGHTS.return.route}</p>
-                  <p>Date & Time: {DEFAULT_FLIGHTS.return.date} | {DEFAULT_FLIGHTS.return.time}</p>
+                  <p>{returnRoute}</p>
+                  <p>Date & Time: {formatDateShort(endDate)} | 11:30 PM</p>
                 </div>
               </div>
               <div className="ml-auto hidden sm:block">
@@ -220,7 +253,7 @@ export default function TravelVoucherPreview({
         <div className="mt-6 p-4 border border-gray-200 rounded-lg">
           <h3 className="font-semibold text-gray-900 mb-3">Day-by-Day Itinerary Overview</h3>
           <ul className="space-y-2 text-sm text-gray-700">
-            {DEFAULT_ITINERARY.map((item, i) => (
+            {itinerary.map((item, i) => (
               <li key={i}>{item}</li>
             ))}
           </ul>

@@ -28,6 +28,7 @@ interface ChatAreaProps {
   showTravelPlanForm?: boolean;
   travelPlanFormDestination?: string;
   onTravelPlanSubmit?: (details: TravelPlanDetails) => void;
+  travelPlanDetails?: TravelPlanDetails | null;
 }
 
 export default function ChatArea({
@@ -50,6 +51,7 @@ export default function ChatArea({
   showTravelPlanForm = false,
   travelPlanFormDestination = '',
   onTravelPlanSubmit,
+  travelPlanDetails,
 }: ChatAreaProps) {
   const [input, setInput] = React.useState('');
   const messagesEndRef = React.useRef<HTMLDivElement>(null);
@@ -210,7 +212,33 @@ export default function ChatArea({
           {message.sender === 'agent' && message.id === travelPlanResponseMessageId && travelPlanResponseMessageId && (
             <div className="flex justify-start">
               <div className="w-full max-w-4xl xl:max-w-5xl pl-[52px] space-y-4">
-                {/* Total Quote Summary */}
+                {/* 1. Top Hotel Options - choose first */}
+                {hotels && hotels.length > 0 && (
+                  <div className="bg-white rounded-xl p-4 lg:p-5 border border-gray-200 shadow-sm">
+                    <HotelOptions
+                      title="Top Hotel Options"
+                      hotels={hotels}
+                      selectedHotelId={selectedHotelId}
+                      onSelectHotel={onSelectHotel}
+                      gridCols="grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
+                      compact
+                    />
+                  </div>
+                )}
+
+                {/* 2. Best Transport Options - choose second */}
+                {transportOptions && transportOptions.length > 0 && (
+                  <div className="bg-white rounded-xl p-4 lg:p-5 border border-gray-200 shadow-sm">
+                    <TransportOptions
+                      title="Best Transport Options"
+                      options={transportOptions}
+                      selectedTransportId={selectedTransportId}
+                      onSelectTransport={onSelectTransport}
+                    />
+                  </div>
+                )}
+
+                {/* 3. Total Quote & Generate PDF - after selecting hotel + transport */}
                 {quote && (
                   <div className="bg-white border border-gray-200 rounded-xl p-4 lg:p-5 shadow-sm">
                     <h3 className="text-base font-bold text-gray-900 mb-3">Total Quote</h3>
@@ -218,6 +246,11 @@ export default function ChatArea({
                       <p className="text-sm text-gray-700">
                         <span className="font-medium">Trip to {quote.destination}:</span> {quote.date}
                       </p>
+                      {travelPlanDetails?.budget && (
+                        <p className="text-sm text-gray-700">
+                          <span className="font-medium">Budget:</span> {travelPlanDetails.budget}
+                        </p>
+                      )}
                       <div className="flex justify-between text-sm">
                         <span className="text-gray-600">Hotel Cost</span>
                         <span className="font-semibold text-gray-900">
@@ -235,43 +268,25 @@ export default function ChatArea({
                       <p className="text-lg font-bold text-gray-900">
                         {quote.currency}{quote.minPrice.toLocaleString()} – {quote.currency}{quote.maxPrice.toLocaleString()}
                       </p>
-                      <p className="text-xs text-gray-600 mt-1">Final price depends on hotel and dates</p>
+                      <p className="text-xs text-gray-600 mt-1">Final price depends on hotel and transport selected</p>
                     </div>
                     {onGeneratePDF && (
-                      <Button
-                        onClick={onGeneratePDF}
-                        className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold py-2 rounded-lg flex items-center justify-center gap-2 text-sm"
-                      >
-                        <Download size={16} />
-                        Generate PDF
-                      </Button>
+                      <>
+                        {selectedHotelId && selectedTransportId ? (
+                          <Button
+                            onClick={onGeneratePDF}
+                            className="w-full bg-orange-500 hover:bg-orange-600 text-white font-semibold py-2 rounded-lg flex items-center justify-center gap-2 text-sm"
+                          >
+                            <Download size={16} />
+                            Generate PDF
+                          </Button>
+                        ) : (
+                          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                            Select a hotel and a transport option above to generate your voucher PDF.
+                          </p>
+                        )}
+                      </>
                     )}
-                  </div>
-                )}
-
-                {/* Top Hotel Options */}
-                {hotels && hotels.length > 0 && (
-                  <div className="bg-white rounded-xl p-4 lg:p-5 border border-gray-200 shadow-sm">
-                    <HotelOptions
-                      title="Top Hotel Options"
-                      hotels={hotels}
-                      selectedHotelId={selectedHotelId}
-                      onSelectHotel={onSelectHotel}
-                      gridCols="grid-cols-1 sm:grid-cols-2 lg:grid-cols-3"
-                      compact
-                    />
-                  </div>
-                )}
-
-                {/* Best Transport Options */}
-                {transportOptions && transportOptions.length > 0 && (
-                  <div className="bg-white rounded-xl p-4 lg:p-5 border border-gray-200 shadow-sm">
-                    <TransportOptions
-                      title="Best Transport Options"
-                      options={transportOptions}
-                      selectedTransportId={selectedTransportId}
-                      onSelectTransport={onSelectTransport}
-                    />
                   </div>
                 )}
               </div>
