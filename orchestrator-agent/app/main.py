@@ -1,4 +1,7 @@
 """Main Orchestrator Agent Application"""
+import asyncio
+from cProfile import label
+from unittest import result
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -272,6 +275,19 @@ async def recommend_travel_plan(request: TravelRecommendationRequest) -> TravelR
         print(f"  ✓ Base Commission: {profit_rules['base_commission_rate']*100}%")
         print(f"  ✓ Luxury Items: {profit_rules['luxury_commission_rate']*100}%")
         print(f"  ✓ Bundle Bonus: {profit_rules['bundle_bonus']*100}%")
+
+        from datetime import datetime as dt
+
+        try:
+            check_in_date = dt.strptime(request.check_in, "%Y-%m-%d")
+            check_out_date = dt.strptime(request.check_out, "%Y-%m-%d")
+            nights = (check_out_date - check_in_date).days
+
+            if nights <= 0:
+                raise HTTPException(status_code=400, detail="Invalid travel dates")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
         
         # ===== STEP 4: CALCULATE PROFITABILITY =====
         print("\n[STEP 4] 💹 Calculating Profitability Metrics...")
@@ -281,7 +297,6 @@ async def recommend_travel_plan(request: TravelRecommendationRequest) -> TravelR
         for hotel in hotel_options:
             hotel_copy = hotel.copy()
             price = float(hotel.get('price_per_night', 100))
-            nights = (len(request.check_out.split('-')) - len(request.check_in.split('-')))  # Rough calculation
             
             # Calculate profit
             total_revenue = price * nights * request.passengers
@@ -542,6 +557,11 @@ async def recommend_travel_plan(request: TravelRecommendationRequest) -> TravelR
         print("\n" + "="*90)
         print("✅ MULTI-OPTION ANALYSIS COMPLETE - LLM SELECTED BEST CHOICE")
         print("="*90 + "\n")
+        comparison_value = (
+            all_recommendations_list[1]["profit_metrics"]["total_profit"]
+            if len(all_recommendations_list) > 1
+            else 0
+)
         
         return TravelRecommendationResponse(
             status="success",
@@ -558,7 +578,12 @@ async def recommend_travel_plan(request: TravelRecommendationRequest) -> TravelR
                 "total_revenue": best_revenue,
                 "platform_profit": best_profit,
                 "profit_margin_percentage": roi_analysis["profit_margin"],
-                "comparison": f"Option #{best_recommendation['rank']} generates ${best_profit:.2f} profit ({roi_analysis['profit_margin']:.1f}% margin) vs ${all_recommendations_list[1]['profit_metrics']['total_profit']:.2f} for #2"
+                "comparison": (
+                    f"Option #{best_recommendation['rank']} generates "
+                    f"${best_profit:.2f} profit "
+                    f"({roi_analysis['profit_margin']:.1f}% margin) "
+                    f"vs ${comparison_value:.2f} for #2"
+                )
             },
             roi_analysis=roi_analysis,
             complete_journey={
@@ -1039,41 +1064,72 @@ async def orchestrate(request: QueryRequest):
         else:
             print(f"  └─ Using model response only")
         
-        # Step 4: Call identified agents
+        # Step 4: Call identified agents in parallel
+        print("\n[STEP 4] Calling Required Agents (Parallel Execution)...")
+
+        tasks = []
+        task_labels = []
+        recommendations = []
+
+        # Hotel Search Task
         if "Hotel Search Agent" in agents_needed:
-            if "location" in request.context or "destination" in request.context:
+            if request.context and (
+                "location" in request.context or "destination" in request.context
+            ):
                 location = request.context.get("location") or request.context.get("destination")
-                print(f"\n[STEP 4.1] Calling Hotel Search Agent...")
-                print(f"  ├─ Agent URL: {settings.hotel_search_agent_url}")
-                print(f"  ├─ Endpoint: POST /search")
-                print(f"  ├─ Location: {location}")
-                
-                hotel_results = await hotel_search_client.search_hotels(
-                    location=location,
-                    check_in=request.context.get("check_in", ""),
-                    check_out=request.context.get("check_out", ""),
-                    guests=request.context.get("guests", 1)
+
+                print(f"  ├─ Scheduling Hotel Search Agent for {location}")
+
+                tasks.append(
+                    hotel_search_client.search_hotels(
+                        location=location,
+                        check_in=request.context.get("check_in", ""),
+                        check_out=request.context.get("check_out", ""),
+                        guests=request.context.get("guests", 1)
+                    )
                 )
-                recommendations.extend(hotel_results[:3])
-                print(f"  └─ ✓ Retrieved {len(hotel_results)} hotel results")
-                logger.info(f"Hotel search returned {len(hotel_results)} results")
-        
+                task_labels.append("hotel")
+
+        # Flight Search Task
         if "Amadeus/TBO Agent" in agents_needed:
-            if "origin" in request.context and "destination" in request.context:
-                print(f"\n[STEP 4.2] Calling Amadeus/TBO Agent...")
-                print(f"  ├─ Agent URL: {settings.amadeus_agent_url}")
-                print(f"  ├─ Endpoint: POST /search")
-                print(f"  ├─ Route: {request.context['origin']} → {request.context['destination']}")
-                
-                flight_results = await amadeus_client.search_flights(
-                    origin=request.context["origin"],
-                    destination=request.context["destination"],
-                    departure_date=request.context.get("departure_date", ""),
-                    passengers=request.context.get("passengers", 1)
+            if request.context and "origin" in request.context and "destination" in request.context:
+
+                print(
+                    f"  ├─ Scheduling Flight Search Agent for "
+                    f"{request.context['origin']} → {request.context['destination']}"
                 )
-                recommendations.extend(flight_results[:3])
-                print(f"  └─ ✓ Retrieved {len(flight_results)} flight results")
-                logger.info(f"Flight search returned {len(flight_results)} results")
+
+                tasks.append(
+                    amadeus_client.search_flights(
+                        origin=request.context["origin"],
+                        destination=request.context["destination"],
+                        departure_date=request.context.get("departure_date", ""),
+                        passengers=request.context.get("passengers", 1)
+                    )
+                )
+                task_labels.append("flight")
+
+        # Execute tasks in parallel
+        if tasks:
+            results = await asyncio.gather(
+                *[asyncio.wait_for(task, timeout=15) for task in tasks],
+                return_exceptions=True
+            )
+
+            for label, result in zip(task_labels, results):
+
+                if isinstance(result, asyncio.TimeoutError):
+                    logger.error(f"{label} agent timed out after 15 seconds")
+                    continue
+
+                if isinstance(result, Exception):
+                    logger.error(f"{label} agent failed: {str(result)}")
+                    continue
+
+                if isinstance(result, list):
+                    recommendations.extend(result[:3])
+                    print(f"  └─ ✓ {label.capitalize()} agent returned {len(result)} results")
+                    logger.info(f"{label} agent returned {len(result)} results")
         
         # Step 5: Apply personalization and business rules
         if request.user_id:

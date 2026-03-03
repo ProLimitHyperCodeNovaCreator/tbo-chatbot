@@ -1,6 +1,6 @@
 """Integration with Personalization Agent"""
 import httpx
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from app.config import settings
 from app.logger import logger
 from app.exceptions import AgentIntegrationError
@@ -12,86 +12,129 @@ class PersonalizationAgentClient:
     def __init__(self):
         """Initialize personalization agent client"""
         self.base_url = settings.personalization_agent_url
-        self.timeout = settings.query_timeout
+
+        # Granular timeout config
+        self.timeout = httpx.Timeout(
+            connect=5.0,
+            read=settings.query_timeout,
+            write=5.0,
+            pool=5.0,
+        )
+
+        # Persistent client (connection pooling)
+        self.client = httpx.AsyncClient(
+            timeout=self.timeout,
+            limits=httpx.Limits(
+                max_connections=50,
+                max_keepalive_connections=20,
+            ),
+        )
 
     async def rank_results(
         self,
         user_id: str,
-        results: list,
-        context: Optional[Dict[str, Any]] = None
-    ) -> list:
+        results: List[Dict[str, Any]],
+        context: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Rank results based on user personalization
-        
-        Args:
-            user_id: User identifier
-            results: Results to rank
-            context: Additional context
-            
-        Returns:
-            Ranked results
         """
-        logger.info(f"Ranking results for user {user_id}")
-        
+        logger.info(f"Ranking {len(results)} results for user {user_id}")
+
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/rank",
-                    json={
-                        "user_id": user_id,
-                        "results": results,
-                        "context": context or {}
-                    }
+            response = await self.client.post(
+                f"{self.base_url}/rank",
+                json={
+                    "user_id": user_id,
+                    "results": results,
+                    "context": context or {},
+                },
+            )
+
+            if response.status_code != 200:
+                logger.error(
+                    f"Personalization agent returned {response.status_code}: {response.text}"
                 )
-                
-                if response.status_code != 200:
-                    raise AgentIntegrationError(
-                        f"Personalization agent returned {response.status_code}"
-                    )
-                
-                return response.json().get("ranked_results", results)
-                
-        except Exception as e:
-            logger.error(f"Personalization ranking failed: {str(e)}")
-            return results  # Return original results on error
+                raise AgentIntegrationError(
+                    f"Personalization agent returned {response.status_code}"
+                )
+
+            try:
+                data = response.json()
+            except ValueError:
+                raise AgentIntegrationError("Invalid JSON response from personalization agent")
+
+            return data.get("ranked_results", results)
+
+        except httpx.TimeoutException:
+            logger.error("Personalization ranking request timed out")
+            raise AgentIntegrationError("Personalization service timeout")
+
+        except httpx.RequestError as e:
+            logger.error(f"Personalization service request error: {str(e)}")
+            raise AgentIntegrationError("Personalization service unavailable") from e
 
     async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
         """Get user personalization profile"""
         logger.info(f"Fetching profile for user {user_id}")
-        
+
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(
-                    f"{self.base_url}/user/{user_id}/profile"
+            response = await self.client.get(
+                f"{self.base_url}/user/{user_id}/profile"
+            )
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"User profile fetch failed with {response.status_code}"
                 )
-                
-                if response.status_code == 200:
-                    return response.json()
                 return {}
-                
-        except Exception as e:
-            logger.error(f"Error fetching user profile: {str(e)}")
+
+            try:
+                return response.json()
+            except ValueError:
+                logger.error("Invalid JSON in user profile response")
+                return {}
+
+        except httpx.TimeoutException:
+            logger.error("User profile request timed out")
+            return {}
+
+        except httpx.RequestError as e:
+            logger.error(f"User profile request error: {str(e)}")
             return {}
 
     async def apply_business_rules(
         self,
         user_id: str,
-        data: Dict[str, Any]
+        data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Apply business rules for user"""
         logger.info(f"Applying business rules for user {user_id}")
-        
+
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    f"{self.base_url}/rules/apply",
-                    json={"user_id": user_id, "data": data}
+            response = await self.client.post(
+                f"{self.base_url}/rules/apply",
+                json={"user_id": user_id, "data": data},
+            )
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"Business rules returned {response.status_code}"
                 )
-                
-                if response.status_code == 200:
-                    return response.json().get("result", data)
                 return data
-                
-        except Exception as e:
-            logger.error(f"Error applying business rules: {str(e)}")
+
+            try:
+                parsed = response.json()
+            except ValueError:
+                logger.error("Invalid JSON in business rules response")
+                return data
+
+            return parsed.get("result", data)
+
+        except httpx.TimeoutException:
+            logger.error("Business rules request timed out")
+            return data
+
+        except httpx.RequestError as e:
+            logger.error(f"Business rules request error: {str(e)}")
             return data
