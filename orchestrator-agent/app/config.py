@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     # Model Configuration
     ollama_host: str = "http://localhost:11434"
-    phi4_model: str = "phi4:latest"
+    phi4_model: str = "phi3:latest"
     llama_model: str = "llama2:latest"
     complexity_threshold: float = 0.6
 
