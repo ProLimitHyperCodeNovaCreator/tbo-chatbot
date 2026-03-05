@@ -111,6 +111,7 @@ export default function Sidebar({
             });
 
             // Reverse geocode to get place name
+            // @ts-ignore
             const geocoder = new google.maps.Geocoder();
             geocoder.geocode({ location: userLocation }, (results: any, status: string) => {
               if (status === 'OK' && results && results[0]) {
@@ -202,33 +203,30 @@ export default function Sidebar({
       <div className="flex justify-around border-b border-gray-200 px-2 flex-shrink-0">
         <button
           onClick={() => setActiveTab('history')}
-          className={`flex items-center gap-1 px-2 py-2 text-xs font-medium rounded-t transition-colors ${
-            activeTab === 'history'
+          className={`flex items-center gap-1 px-2 py-2 text-xs font-medium rounded-t transition-colors ${activeTab === 'history'
               ? 'text-blue-600 border-b-2 border-blue-600'
               : 'text-gray-600 hover:text-gray-900'
-          }`}
+            }`}
         >
           <Clock size={16} />
           <span className="hidden sm:inline">History</span>
         </button>
         <button
           onClick={() => setActiveTab('plans')}
-          className={`flex items-center gap-1 px-2 py-2 text-xs font-medium rounded-t transition-colors ${
-            activeTab === 'plans'
+          className={`flex items-center gap-1 px-2 py-2 text-xs font-medium rounded-t transition-colors ${activeTab === 'plans'
               ? 'text-blue-600 border-b-2 border-blue-600'
               : 'text-gray-600 hover:text-gray-900'
-          }`}
+            }`}
         >
           <Star size={16} />
           <span className="hidden sm:inline">Plans</span>
         </button>
         <button
           onClick={() => setActiveTab('reports')}
-          className={`flex items-center gap-1 px-2 py-2 text-xs font-medium rounded-t transition-colors ${
-            activeTab === 'reports'
+          className={`flex items-center gap-1 px-2 py-2 text-xs font-medium rounded-t transition-colors ${activeTab === 'reports'
               ? 'text-blue-600 border-b-2 border-blue-600'
               : 'text-gray-600 hover:text-gray-900'
-          }`}
+            }`}
         >
           <FileText size={16} />
           <span className="hidden sm:inline">Reports</span>
@@ -317,7 +315,7 @@ export default function Sidebar({
             ref={mapContainer}
             className="w-full h-full absolute inset-0"
           />
-          
+
           {/* Loading State */}
           {!mapLoaded && !mapError && (
             <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 animate-pulse z-10">
@@ -327,7 +325,7 @@ export default function Sidebar({
               </div>
             </div>
           )}
-          
+
           {/* Error State */}
           {mapError && (
             <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-br from-gray-50 to-gray-100 z-10">
@@ -339,7 +337,7 @@ export default function Sidebar({
             </div>
           )}
         </div>
-        
+
         {/* Location Info */}
         <div className="mt-3 p-3 bg-gradient-to-r from-blue-50 to-cyan-50 rounded-lg border border-blue-200">
           <div className="flex items-start gap-2">

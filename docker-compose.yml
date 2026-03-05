@@ -99,6 +99,13 @@ services:
       - ollama_data:/root/.ollama
     networks:
       - tbo-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
     restart: unless-stopped
 
   # ================================

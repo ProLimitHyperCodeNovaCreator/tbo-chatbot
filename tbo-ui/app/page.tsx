@@ -21,7 +21,7 @@ import {
   mockReports,
   mockRecommendedHotels,
 } from '@/lib/mockData';
-import { ChatMessage, HotelOption, QuoteSummary } from '@/lib/types';
+import { ChatMessage, HotelOption, QuoteSummary, TransportOption } from '@/lib/types';
 import type { TravelPlanDetails } from '@/components/TravelPlanForm';
 
 export default function Home() {
@@ -38,6 +38,8 @@ export default function Home() {
   const [voucherTransport, setVoucherTransport] = useState<typeof mockTransport[0] | null>(null);
   const [showTravelPlanForm, setShowTravelPlanForm] = useState(false);
   const [travelPlanFormDestination, setTravelPlanFormDestination] = useState('');
+  const [dynamicHotels, setDynamicHotels] = useState<HotelOption[]>(mockHotels);
+  const [dynamicTransport, setDynamicTransport] = useState<TransportOption[]>(mockTransport);
   const [travelPlanDetails, setTravelPlanDetails] = useState<TravelPlanDetails | null>(null);
 
   const displayQuote = useMemo((): QuoteSummary => {
@@ -47,8 +49,8 @@ export default function Home() {
     const dateStr = details?.startDate
       ? `${new Date(details.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} (+${nights} days)`
       : mockQuote.date;
-    const hotel = selectedHotel ? mockHotels.find((h) => h.id === selectedHotel) : undefined;
-    const transport = selectedTransport ? mockTransport.find((t) => t.id === selectedTransport) : undefined;
+    const hotel = selectedHotel ? dynamicHotels.find((h) => h.id === selectedHotel) : undefined;
+    const transport = selectedTransport ? dynamicTransport.find((t) => t.id === selectedTransport) : undefined;
     const total = (hotel ? hotel.price * nights : 0) + (transport ? transport.price : 0) || mockQuote.minPrice;
     return {
       destination: dest,
@@ -127,6 +129,7 @@ export default function Home() {
   const processMessage = async (
     text: string,
     isVoiceInput: boolean = false,
+    planDetails?: TravelPlanDetails
   ) => {
     if (!text.trim() || isLoading) return;
 
@@ -173,9 +176,9 @@ export default function Home() {
           prev.map((msg) =>
             msg.id === thinkingMessageId
               ? {
-                  ...msg,
-                  currentActivity: activitySequence[currentActivityIndex],
-                }
+                ...msg,
+                currentActivity: activitySequence[currentActivityIndex],
+              }
               : msg
           )
         );
@@ -183,17 +186,74 @@ export default function Home() {
     }, 800);
 
     try {
-      // 1. Send text to Gemini API (or your AI endpoint)
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
-      });
+      let replyText = '';
+      if (planDetails) {
+        // Use the new plan API which fully utilizes the orchestrator's travel plan logic
+        const checkInDate = new Date(planDetails.startDate);
+        const checkOutDate = new Date(checkInDate);
+        checkOutDate.setDate(checkOutDate.getDate() + planDetails.numberOfDays);
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
+        const response = await fetch('/api/plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            origin: planDetails.fromCity,
+            destination: planDetails.destination,
+            check_in: checkInDate.toISOString().split('T')[0],
+            check_out: checkOutDate.toISOString().split('T')[0],
+            passengers: planDetails.travelers,
+            budget: planDetails.budget ? parseFloat(planDetails.budget.replace(/[^0-9.]/g, '')) || undefined : undefined
+          }),
+        });
 
-      const replyText = data.text;
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to generate plan');
+
+        replyText = `${data.analysis}\n\n**Recommendation:**\n${data.reasoning}\n\n${data.comparison_summary}`;
+
+        if (data.hotel_options && Array.isArray(data.hotel_options)) {
+          const freshHotels = data.hotel_options.map((h: any, idx: number) => ({
+            id: h.id || `hotel_${idx}`,
+            name: h.name,
+            image: h.image || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=500&h=400&fit=crop',
+            rating: h.rating,
+            reviewCount: h.rating_count,
+            price: h.price_per_night,
+            priceUnit: '/night',
+            amenities: h.amenities || [],
+            cancellation: true,
+            tier: h.tier || (h.rating >= 4.5 ? 'premium' : 'standard')
+          }));
+          setDynamicHotels(freshHotels);
+          if (freshHotels.length > 0) setSelectedHotel(freshHotels[0].id);
+        }
+
+        if (data.flight_options && Array.isArray(data.flight_options)) {
+          const freshTransport = data.flight_options.map((f: any, idx: number) => ({
+            id: f.id || `flight_${idx}`,
+            name: f.airline || "Flight",
+            icon: '✈️',
+            duration: f.duration || "Direct",
+            price: f.price,
+            priceUnit: 'per person',
+            type: 'shuttle'
+          }));
+          setDynamicTransport(freshTransport);
+          if (freshTransport.length > 0) setSelectedTransport(freshTransport[0].id);
+        }
+      } else {
+        // 1. Send text to Gemini API (or your AI endpoint)
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error);
+
+        replyText = data.text;
+      }
 
       clearInterval(activityInterval);
 
@@ -202,12 +262,12 @@ export default function Home() {
         prev.map((msg) =>
           msg.id === thinkingMessageId
             ? {
-                ...msg,
-                message: replyText,
-                isLoading: false,
-                currentActivity: '✅ Complete',
-                agentActivity: [],
-              }
+              ...msg,
+              message: replyText,
+              isLoading: false,
+              currentActivity: '✅ Complete',
+              agentActivity: [],
+            }
             : msg
         )
       );
@@ -228,12 +288,12 @@ export default function Home() {
         prev.map((msg) =>
           msg.id === thinkingMessageId
             ? {
-                ...msg,
-                message: 'Sorry, I encountered an error connecting to the AI.',
-                isLoading: false,
-                currentActivity: '❌ Error',
-                agentActivity: [],
-              }
+              ...msg,
+              message: 'Sorry, I encountered an error connecting to the AI.',
+              isLoading: false,
+              currentActivity: '❌ Error',
+              agentActivity: [],
+            }
             : msg
         )
       );
@@ -274,7 +334,7 @@ export default function Home() {
     setTravelPlanDetails(details);
     const startFormatted = new Date(details.startDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
     const summary = `Create a travel plan from ${details.fromCity} to ${details.destination}, ${details.numberOfDays} days, starting ${startFormatted}, for ${details.travelers} traveler${details.travelers > 1 ? 's' : ''}.${details.budget ? ` Budget: ${details.budget}.` : ''}`;
-    processMessage(summary, false);
+    processMessage(summary, false, details);
   };
 
   // Triggered when user clicks the Microphone
@@ -311,8 +371,8 @@ export default function Home() {
   };
 
   const handleGeneratePDF = () => {
-    const hotel = selectedHotel ? mockHotels.find((h) => h.id === selectedHotel) ?? null : null;
-    const transport = selectedTransport ? mockTransport.find((t) => t.id === selectedTransport) ?? null : null;
+    const hotel = selectedHotel ? dynamicHotels.find((h) => h.id === selectedHotel) ?? null : null;
+    const transport = selectedTransport ? dynamicTransport.find((t) => t.id === selectedTransport) ?? null : null;
     const nights = travelPlanDetails?.numberOfDays ?? 4;
     const hotelCost = hotel ? hotel.price * nights : 0;
     const transportCost = transport ? transport.price : 0;
@@ -373,10 +433,10 @@ export default function Home() {
               messages={messages}
               onSendMessage={handleSendMessage}
               onToggleVoice={handleToggleVoice}
-              hotels={mockHotels}
+              hotels={dynamicHotels}
               selectedHotelId={selectedHotel}
               onSelectHotel={setSelectedHotel}
-              transportOptions={mockTransport}
+              transportOptions={dynamicTransport}
               selectedTransportId={selectedTransport}
               onSelectTransport={setSelectedTransport}
               isLoading={isLoading}
@@ -406,14 +466,14 @@ export default function Home() {
           <div className="p-6 flex justify-center" style={{ minWidth: '210mm' }}>
             <div style={{ width: '210mm', flexShrink: 0 }}>
               <TravelVoucherPreview
-              quote={voucherQuote}
-              selectedHotel={voucherHotel}
-              selectedTransport={voucherTransport}
-              agent={mockAgent}
-              tripDetails={travelPlanDetails}
-              onClose={() => setShowVoucherPreview(false)}
-              showActions={true}
-            />
+                quote={voucherQuote}
+                selectedHotel={voucherHotel}
+                selectedTransport={voucherTransport}
+                agent={mockAgent}
+                tripDetails={travelPlanDetails}
+                onClose={() => setShowVoucherPreview(false)}
+                showActions={true}
+              />
             </div>
           </div>
         </DialogContent>
