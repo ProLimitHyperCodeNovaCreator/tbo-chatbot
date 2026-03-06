@@ -198,59 +198,92 @@ export default function Home() {
         const checkOutDate = new Date(checkInDate);
         checkOutDate.setDate(checkOutDate.getDate() + planDetails.numberOfDays);
 
-        const response = await fetch('/api/plan', {
+        // ── 1. Fetch real flights from transport-search-api (always runs) ──────
+        const flightsFetch = fetch('/api/flights', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             origin: planDetails.fromCity,
             destination: planDetails.destination,
-            check_in: checkInDate.toISOString().split('T')[0],
-            check_out: checkOutDate.toISOString().split('T')[0],
-            passengers: planDetails.travelers,
-            budget: planDetails.budget ? parseFloat(planDetails.budget.replace(/[^0-9.]/g, '')) || undefined : undefined
+            date: checkInDate.toISOString().split('T')[0],
+            adults: planDetails.travelers,
           }),
-        });
+        }).then(async (res) => {
+          if (!res.ok) return null;
+          return res.json();
+        }).catch(() => null);
 
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || 'Failed to generate plan');
-
-        replyText = `${data.analysis}\n\n---\n**Trip Summary:**\n${data.reasoning}\n\n${data.comparison_summary}`;
-
-        if (data.hotel_options && Array.isArray(data.hotel_options)) {
-          const freshHotels = data.hotel_options.map((h: any, idx: number) => ({
-            id: h.id || `hotel_${idx}`,
-            name: h.name,
-            image: h.image || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=500&h=400&fit=crop',
-            rating: h.rating,
-            reviewCount: h.rating_count,
-            price: h.price_per_night,
-            priceUnit: '/night',
-            amenities: h.amenities || [],
-            cancellation: true,
-            tier: h.tier || (h.rating >= 4.5 ? 'premium' : 'standard')
-          }));
-          setDynamicHotels(freshHotels);
-          if (freshHotels.length > 0) setSelectedHotel(freshHotels[0].id);
+        // ── 2. Fetch the orchestrator travel plan (best-effort) ─────────────
+        let orchestratorData: any = null;
+        try {
+          const response = await fetch('/api/plan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              origin: planDetails.fromCity,
+              destination: planDetails.destination,
+              check_in: checkInDate.toISOString().split('T')[0],
+              check_out: checkOutDate.toISOString().split('T')[0],
+              passengers: planDetails.travelers,
+              budget: planDetails.budget ? parseFloat(planDetails.budget.replace(/[^0-9.]/g, '')) || undefined : undefined
+            }),
+          });
+          if (response.ok) {
+            orchestratorData = await response.json();
+          }
+        } catch {
+          // Orchestrator may be offline; flights still come from transport API
         }
 
-        if (data.flight_options && Array.isArray(data.flight_options)) {
-          const freshFlights: FlightOption[] = data.flight_options.map((f: any, idx: number) => ({
-            id: f.id || `flight_${idx}`,
-            airline: f.airline || f.provider || 'Flight',
-            airlineCode: f.airline_code || f.airlineCode,
-            flightNumber: f.flight_number || f.flightNumber,
-            origin: f.origin || planDetails?.fromCity || '',
-            destination: f.destination || planDetails?.destination || '',
-            departureTime: f.departure_time || (f.departure ? `${f.departure}T00:00` : undefined),
-            arrivalTime: f.arrival_time || f.arrival,
-            duration: f.duration || 'Direct',
-            stops: typeof f.stops === 'number' ? f.stops : 0,
-            price: f.price || 0,
-            currency: f.currency || 'USD',
-            cabinClass: f.cabin_class || f.cabinClass || 'Economy',
-          }));
-          setDynamicFlights(freshFlights);
-          if (freshFlights.length > 0) setSelectedFlight(freshFlights[0].id);
+        if (orchestratorData) {
+          replyText = `${orchestratorData.analysis}\n\n---\n**Trip Summary:**\n${orchestratorData.reasoning}\n\n${orchestratorData.comparison_summary}`;
+
+          if (orchestratorData.hotel_options && Array.isArray(orchestratorData.hotel_options)) {
+            const freshHotels = orchestratorData.hotel_options.map((h: any, idx: number) => ({
+              id: h.id || `hotel_${idx}`,
+              name: h.name,
+              image: h.image || 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=500&h=400&fit=crop',
+              rating: h.rating,
+              reviewCount: h.rating_count,
+              price: h.price_per_night,
+              priceUnit: '/night',
+              amenities: h.amenities || [],
+              cancellation: true,
+              tier: h.tier || (h.rating >= 4.5 ? 'premium' : 'standard')
+            }));
+            setDynamicHotels(freshHotels);
+            if (freshHotels.length > 0) setSelectedHotel(freshHotels[0].id);
+          }
+
+          // Use orchestrator flight data only as a fallback seed; transport API wins below
+          if (orchestratorData.flight_options && Array.isArray(orchestratorData.flight_options)) {
+            const freshFlights: FlightOption[] = orchestratorData.flight_options.map((f: any, idx: number) => ({
+              id: f.id || `flight_${idx}`,
+              airline: f.airline || f.provider || 'Flight',
+              airlineCode: f.airline_code || f.airlineCode,
+              flightNumber: f.flight_number || f.flightNumber,
+              origin: f.origin || planDetails?.fromCity || '',
+              destination: f.destination || planDetails?.destination || '',
+              departureTime: f.departure_time || (f.departure ? `${f.departure}T00:00` : undefined),
+              arrivalTime: f.arrival_time || f.arrival,
+              duration: f.duration || 'Direct',
+              stops: typeof f.stops === 'number' ? f.stops : 0,
+              price: f.price || 0,
+              currency: f.currency || 'USD',
+              cabinClass: f.cabin_class || f.cabinClass || 'Economy',
+            }));
+            setDynamicFlights(freshFlights);
+            if (freshFlights.length > 0) setSelectedFlight(freshFlights[0].id);
+          }
+        } else {
+          replyText = `Here are your travel options from **${planDetails.fromCity}** to **${planDetails.destination}** for ${planDetails.travelers} traveler${planDetails.travelers > 1 ? 's' : ''}. Check the flight options on the right!`;
+        }
+
+        // ── 3. Apply real flight data from transport API (overrides orchestrator) ──
+        const flightsData = await flightsFetch;
+        if (flightsData?.flights && flightsData.flights.length > 0) {
+          setDynamicFlights(flightsData.flights);
+          setSelectedFlight(flightsData.flights[0].id);
         }
       } else {
         // 1. Send text to Gemini API (or your AI endpoint)
